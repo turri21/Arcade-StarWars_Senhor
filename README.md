@@ -1,3 +1,8 @@
+-=(StarWars_Senhor notes)=-
+
+Tested: Working Video 720p, 1080p & Sound.
+
+___
 # Star Wars + The Empire Strikes Back (Arcade, 1983 + 1985) for MiSTer FPGA
 
 An FPGA implementation of Atari's classic color vector arcade games **Star Wars** and **The Empire Strikes Back** for the [MiSTer FPGA](https://github.com/MiSTer-devel/Main_MiSTer/wiki) platform.
