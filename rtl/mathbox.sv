@@ -239,10 +239,10 @@ module mathbox (
 	//   State 1 (T1): IP valid. Compute MA. Set RAM read address.
 	//   State 2 (T2): RAMWORD valid from RAM.
 	//   State 3 (T3): Execute all strobes. Write RAM if SAC. Start MAC if LDC.
-	//   State 4 (T4): Advance MPA. Check HALT. → State 0.
+	//   State 4 (T4): Advance MPA. Check HALT. -> State 0.
 	//
 	// MAC stall (state 5): 33 additional cycles for serial multiply.
-	//   After 33 cycles → State 4.
+	//   After 33 cycles -> State 4.
 	//
 	// Total: 5 cycles per normal step, 38 cycles per LDC step.
 	// =========================================================================
@@ -288,8 +288,8 @@ module mathbox (
 			// === CPU Write Handling (gated by CE = 1.5MHz clock enable) ===
 			if (ce && ctrl_sel && ~cpu_rw) begin
 				case (cpu_addr[2:0])
-					3'h0: begin // MW0 — Load MPA and START execution
-						// On real hardware, MW0 is a simple latch write — it always
+					3'h0: begin // MW0 - Load MPA and START execution
+						// On real hardware, MW0 is a simple latch write - it always
 						// loads MPA and (re)starts the PROM state machine, even if
 						// already running. No running guard exists in the original
 						// hardware. The write is CE-gated (one pulse per E cycle)
@@ -298,14 +298,14 @@ module mathbox (
 						running <= 1;
 						state   <= 0;
 					end
-					3'h1: bic <= {cpu_din[0], bic[7:0]};       // MW1 — BIC high bit
-					3'h2: bic <= {bic[8], cpu_din[7:0]};       // MW2 — BIC low byte
-					3'h4: begin // DVSRH — Divisor high + prep
+					3'h1: bic <= {cpu_din[0], bic[7:0]};       // MW1 - BIC high bit
+					3'h2: bic <= {bic[8], cpu_din[7:0]};       // MW2 - BIC low byte
+					3'h4: begin // DVSRH - Divisor high + prep
 						divisor <= {cpu_din, divisor[7:0]};
 						temp_q  <= 16'd0;
 						temp_d  <= dividend;
 					end
-					3'h5: begin // DVSRL — Divisor low + START divide
+					3'h5: begin // DVSRL - Divisor low + START divide
 						divisor   <= {divisor[15:8], cpu_din};
 						// Guard: only start division if idle. Once started, the
 						// 15-cycle restoring division runs to completion.
@@ -342,10 +342,10 @@ module mathbox (
 						// CLEAR_ACC (bit 4, 0x10)
 						if (exec_strobe[4]) acc <= 0;
 
-						// LAC (bit 0, 0x01) — Load ACC from RAM (clears LSB)
+						// LAC (bit 0, 0x01) - Load ACC from RAM (clears LSB)
 						if (exec_strobe[0]) acc <= {mb_rdata, 16'h0000};
 
-						// SAC/READ_ACC (bit 1, 0x02) — Store ACC to RAM
+						// SAC/READ_ACC (bit 1, 0x02) - Store ACC to RAM
 						if (exec_strobe[1]) begin
 							mb_wr       <= 1;
 							mb_addr     <= exec_addr;
@@ -362,7 +362,7 @@ module mathbox (
 						// LDA (bit 7, 0x80)
 						if (exec_strobe[7]) reg_a <= mb_rdata;
 
-						// LDC (bit 5, 0x20) — Load C + start MAC
+						// LDC (bit 5, 0x20) - Load C + start MAC
 						if (exec_strobe[5]) begin
 							reg_c <= mb_rdata;
 
@@ -419,7 +419,7 @@ module mathbox (
 						end else begin
 							// Final cycle (mac_count == 1): add product to ACC
 							// The <<2 likely models pipeline alignment in the 74LS384
-							// (My interpretation — matches MAME and all test results)
+							// (My interpretation - matches MAME and all test results)
 							acc       <= acc + (mac_prod[31:0] <<< 2);
 							mac_count <= 0;
 							state     <= 3'd4; // Continue to MPA advance

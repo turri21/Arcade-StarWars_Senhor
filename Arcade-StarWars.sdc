@@ -1,6 +1,6 @@
 # tms_clk constraint removed
 
-# Our PLL outputs are in different clock domains (clk_50, clk_12, clk_108).
+# Our PLL outputs are in different clock domains (clk_50, clk_12, video/core 125 MHz).
 # The system SDC groups them together since they come from the same PLL.
 # Explicitly declare them as asynchronous to each other.
 # The CDC crossings are safe: control signals are quasi-static (OSD settings),

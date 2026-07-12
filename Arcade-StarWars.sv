@@ -175,116 +175,172 @@ module emu
 
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
-assign {SDRAM_DQ, SDRAM_A, SDRAM_BA, SDRAM_CLK, SDRAM_CKE, SDRAM_DQML, SDRAM_DQMH, SDRAM_nWE, SDRAM_nCAS, SDRAM_nRAS, SDRAM_nCS} = 'Z;
+
+wire [15:0] sdram_dq_out;
+wire        sdram_dq_oe;
+wire  [1:0] sdram_dqm;
+
+// Commands and write data change on the 125 MHz video/core clock rising edge.
+// Driving SDRAM with the inverted clock gives them half a cycle to settle
+// before the chip's active edge.
+assign SDRAM_DQ   = sdram_dq_oe ? sdram_dq_out : 16'hzzzz;
+assign SDRAM_DQML = sdram_dqm[0];
+assign SDRAM_DQMH = sdram_dqm[1];
 
 assign VGA_F1    = 0;
-assign VGA_SCALER= 1;
+assign VGA_SCALER= 0;
 assign VGA_DISABLE = 0;
 assign VGA_SL = 0;
 assign USER_OUT  = '1;
 wire [2:0] core_led;
 assign LED_USER  = core_led[2] | ioctl_download;
-assign LED_DISK  = 2'b00;
-assign LED_POWER = 2'b00;
+// assign LED_POWER = {1'b1, core_led[1]};
+// assign LED_DISK  = {1'b1, core_led[0]};
+assign LED_POWER = 0; // Let system control
+assign LED_DISK  = 0; // Let system control
 assign BUTTONS   = 0;
 assign AUDIO_MIX = 0;
 assign HDMI_FREEZE = 0;
 
-assign CLK_VIDEO = clk_108; // Direct PLL output (107.14 MHz)
+assign CLK_VIDEO = clk_125; // Direct PLL output (125 MHz)
 assign VGA_HS = hs;
 assign VGA_VS = vs;
 assign VGA_DE = ~(hblank | vblank);
-assign VGA_R = 0;
-assign VGA_G = 0;
-assign VGA_B = 0;
 
 wire [1:0] ar = status[15:14];
 
-// 120Hz MODE — SAFE ACTIVATION
-// The HPS restores saved status bits (including status[25]=120Hz ON)
-// during boot, BEFORE HDMI_HEIGHT is valid during initialization -> HDMI sync loss.
-
-// --- Stage 1: Boot holdoff (~1.3 seconds after FPGA config) ---
-// Core ALWAYS starts outputting 60Hz timing regardless of saved settings.
-reg [26:0] boot_cnt = 0;
-reg boot_done = 0;
-always @(posedge clk_50) begin
-	if (!boot_cnt[26])
-		boot_cnt <= boot_cnt + 1'd1;
-	else
-		boot_done <= 1;
-end
-
-// --- Stage 2: Universal HDMI_HEIGHT validation
-// Require height to be != 0 and stable for ~335ms.
-reg [11:0] last_hdmi_height = 0;
-reg [24:0] stable_hdmi_cnt = 0;
-reg is_hdmi_stable = 0;
+// Stable transition to and from 120Hz Mode.
+// ASCAL still does not like transitions to and from 120Hz and occasionally hangs.
+// Double-flop and s1==s2 check for safe multi-bit domain crossing
+reg [11:0] h_s1 = 0, h_s2 = 0;
+reg [11:0] hdmi_height_candidate = 0;
+reg [11:0] stable_height_reg = 0;
+reg [24:0] hdmi_height_timer = 0;
 
 always @(posedge clk_50) begin
-	if (HDMI_HEIGHT != last_hdmi_height || HDMI_HEIGHT == 12'd0) begin
-		last_hdmi_height <= HDMI_HEIGHT;
-		stable_hdmi_cnt <= 0;
-		is_hdmi_stable <= 0;
-	end else if (!stable_hdmi_cnt[24]) begin
-		stable_hdmi_cnt <= stable_hdmi_cnt + 1'd1;
-	end else begin
-		is_hdmi_stable <= 1;
+	h_s1 <= HDMI_HEIGHT;
+	h_s2 <= h_s1;
+
+	if (h_s1 == h_s2) begin
+		if (h_s2 > 12'd200 && h_s2 == hdmi_height_candidate) begin
+			if (hdmi_height_timer < 25'd25_000_000) begin
+				hdmi_height_timer <= hdmi_height_timer + 1'd1;
+			end else begin
+				stable_height_reg <= hdmi_height_candidate;
+			end
+		end else begin
+			hdmi_height_candidate <= h_s2;
+			hdmi_height_timer <= 0;
+			stable_height_reg <= 0; // Go to 0 while stabilizing
+		end
 	end
 end
 
-wire is_720p_valid = (HDMI_HEIGHT >= 12'd600) & (HDMI_HEIGHT <= 12'd720);
-wire is_720p_stable = is_hdmi_stable & is_720p_valid;
+reg hz_s1 = 0, hz_s2 = 0;
+reg osd_120hz_latched = 0;
+reg [24:0] hz_timer = 0;
 
-// --- Stage 3: 120Hz mode signal
-// If boot holdoff expired, user wants 120Hz, and HDMI_HEIGHT has been stable.
-wire osd_120hz_mode = boot_done & status[25] & is_720p_stable;
-wire not_720p = ~is_720p_stable;
-
-// Universal Video Mode Stable Flag
-wire video_mode_stable = boot_done & is_hdmi_stable;
-
-// --- Video mode change notification ---
-reg new_vmode_toggle = 0;
-reg mode_120_prev = 0;
-reg boot_done_prev = 0;
 always @(posedge clk_50) begin
-	boot_done_prev <= boot_done;
+	hz_s1 <= status[25];
+	hz_s2 <= hz_s1;
 
-	if (!boot_done) begin
-		// During boot: silently track status[25] without firing vmode
-		mode_120_prev <= status[25];
-	end else begin
-		// After boot: fire vmode on user OSD toggle
-		mode_120_prev <= status[25];
-		if (mode_120_prev != status[25])
-			new_vmode_toggle <= ~new_vmode_toggle;
+	if (hz_s1 == hz_s2) begin
+		if (hz_s2 != osd_120hz_latched) begin
+			if (hz_timer < 25'd25_000_000) begin
+				hz_timer <= hz_timer + 1'd1;
+			end else begin
+				osd_120hz_latched <= hz_s2;
+				hz_timer <= 0;
+			end
+		end else begin
+			hz_timer <= 0;
+		end
 	end
-
-	// Fire once when boot holdoff expires and 120Hz is activating
-	if (boot_done & !boot_done_prev & osd_120hz_mode)
-		new_vmode_toggle <= ~new_vmode_toggle;
 end
 
+// Force STABLE_HEIGHT to 0 during 120Hz toggle debouncing, forcing a soft reset in starwars.sv
+wire is_120hz_changing = (hz_s2 != osd_120hz_latched) || (hz_timer > 0);
+wire [11:0] STABLE_HEIGHT = is_120hz_changing ? 12'd0 : stable_height_reg;
+wire STABLE_120HZ = osd_120hz_latched & (STABLE_HEIGHT == 12'd720);
+
+// Profile Management has per resolution presets and offers two custom option sets.
+//
 // Status Bit Map:
-//             Upper                             Lower              
-// 0         1         2         3          4         5         6   
+//             Upper                             Lower
+// 0         1         2         3          4         5         6
 // 01234567890123456789012345678901 23456789012345678901234567890123
 // 0123456789ABCDEFGHIJKLMNOPQRSTUV 0123456789ABCDEFGHIJKLMNOPQRSTUV
-// XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX  XXXXXXX                         
-`include "build_id.v" 
+// XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX  XXXXXXX
+`include "build_id.v"
 localparam CONF_STR = {
 	"Star Wars;;",
 	"-;",
 	"P3,Video Options;",
 	"P3-;",
-	"P3OEF,Aspect ratio,Optimized,Stretched,Pixel Perfect;",
-	"D3P3OP,120Hz (720p only),Off,On;",
-	"P3O2,Unbuffered Vectors,Off,On;",
+	"P3O[15:14],Aspect ratio,Optimized,Stretched,Pixel Perfect;",
+	"D3P3O[25],120Hz (720p only),Off,On;",
+	"P3O[40:39],Buffer Mode,EOF + VBL,VBL,EOF;",
 	"P3-;",
-	"P3OSTU,CRT Dot Bloom,Auto,Pixel,Double,Elipse;",
-	"P3OQ,CRT Hit Flash,On,Off;",
-	"P3o56,Tone Mapping,Linear 1,Linear 2,Bright,Off;",
+	"P3O[68:66],Profile,Off,A Touch of CRT,80s Cruise Control,80s Overdrive,Neon Fever Dream,Pink Flamingo ESB,Custom 1,Custom 2;",
+	"h7P3O[30:28],Dot Scale,Auto,Pixel,2x,2.5x;",
+	"h7P3O[38:37],Tone Mapping,Linear 2,Bright,Off,Linear 1;",
+	"h7P3O[56:55],Phosphor Decay,Off,LUT A,LUT B,LUT C;",
+	"h7P3-;",
+	"h7P3-, For advanced settings;",
+	"h7P3-, select Custom Profiles 1/2;",
+	"h8P3-;",
+	"h8P3-,This profile adds a subtle;",
+	"h8P3-,CRT halo and bloom effect,;",
+	"h8P3-,to modern AA vector drawing;",
+	"h8P3-;",
+	"h8P3-,   Use Custom Profiles 1/2;",
+	"h8P3-, to create your own effects;",
+	"h9P3-;",
+	"h9P3-,Step away from the modern..;",
+	"h9P3-,The Amplifone Slot-Mask adds;",
+	"h9P3-,faint vertical CRT stripes +;",
+	"h9P3-,richer halos and blooming.;",
+	"h9P3-,A new color space setting;",
+	"h9P3-,delivers authentic blues.;",
+	"h9P3-;",
+	"h9P3-,Warning: Overdrive is next;",
+	"hAP3-;",
+	"hAP3-,A remote arcade in the 80s:;",
+	"hAP3-,CRTs overdriven and abused;",
+	"hAP3-,pulsate with vector glow.;",
+	"hAP3-;",
+	"hAP3-,Phosphor decay simulation;",
+	"hAP3-,depends highly on your;",
+	"hAP3-,monitor's panel type and;",
+	"hAP3-,settings;",
+	"hAP3-;",
+	"hBP3-;",
+	"hBP3-,     Epilepsy warning:;",
+	"hBP3-,    excessive flashing;",
+	"hBP3-,       bright lights;",
+	"hBP3-;",
+	"hBP3-,   Use Custom Profiles 1/2;",
+	"hBP3-, to create your own effects;",
+	"hDP3O[71:69],> Dot Scale,Auto,Pixel,2x,2.5x;",
+	"hDP3O[73:72],> Tone Mapping,Linear 2,Bright,Off,Linear 1;",
+	"hDP3O[76:74],> Bloom Width,Off,Thin,Tight,Soft,Normal,Broad,Wide-,Wide;",
+	"hDD5P3O[79:77],> Bloom Curve,Minimal,Min+,Mild,Mild+,Moderate,Mod+,Strong-,Strong;",
+	"hDP3O[82:80],> Halo,Off,0.25x,0.33x,0.5x,0.75x,1.0x,1.25x,1.5x;",
+	"hDD6P3O[84:83],> Halo Spread,Original,Wide 1,Wide 2,Wide 3;",
+	"hDP3O[86:85],> Phosphor Decay,Off,LUT A,LUT B,LUT C;",
+	"hDP3O[87],> Color Space,Off,Amp709;",
+	"hDP3O[90:88],> Color Channels,RGB,RBG,GRB,GBR,BRG,BGR,B/W,Negative;",
+	"hDP3O[91],> Slot Mask,Off,On;",
+	"hEP3O[94:92],> Dot Scale,Auto,Pixel,2x,2.5x;",
+	"hEP3O[96:95],> Tone Mapping,Linear 2,Bright,Off,Linear 1;",
+	"hEP3O[99:97],> Bloom Width,Off,Thin,Tight,Soft,Normal,Broad,Wide-,Wide;",
+	"hED5P3O[102:100],> Bloom Curve,Minimal,Min+,Mild,Mild+,Moderate,Mod+,Strong-,Strong;",
+	"hEP3O[105:103],> Halo,Off,0.25x,0.33x,0.5x,0.75x,1.0x,1.25x,1.5x;",
+	"hED6P3O[107:106],> Halo Spread,Original,Wide 1,Wide 2,Wide 3;",
+	"hEP3O[109:108],> Phosphor Decay,Off,LUT A,LUT B,LUT C;",
+	"hEP3O[110],> Color Space,Off,Amp709;",
+	"hEP3O[113:111],> Color Channels,RGB,RBG,GRB,GBR,BRG,BGR,B/W,Negative;",
+	"hEP3O[114],> Slot Mask,Off,On;",
 	 "-;",
 	"P2,Cabinet Audio Hardware;",
 	"P2-;",
@@ -329,15 +385,28 @@ localparam CONF_STR = {
 	"OR,Autosave NVRAM,Off,On;",
 	"T4,Save NVRAM;",
 	"-;",
+	"P5,Core Info;",
+	"P5-;",
+	"P5-,Atari Star Wars / ESB core;",
+	"P5-,     by Videodr0me 2026;",
+	"P5-;",
+	"P5-,If you enjoy reliving the;",
+	"P5-,golden age of arcade games,;",
+	"P5-,please support my work and;",
+	"P5-,future updates:;",
+	"P5-;",
+	"P5-,buymeacoffee.com/videodr0me;",
+	"-;",
 	"R0,Reset;",
 	"J1,Fire L,Shield L,Aux Coin,Coin L,Coin R,Fire R,Shield R;",
 	"jn,A,B,Start,R,L,Y,Z;",
-	"V,v1.02.",`BUILD_DATE
+	"V,v2.00.",`BUILD_DATE
 };
 
 ////////////////////   CLOCKS   ///////////////////
 
-wire clk_6, clk_12, clk_50, clk_108;
+wire clk_6, clk_12, clk_50, clk_125;
+assign SDRAM_CLK = ~clk_125;
 wire pll_locked;
 
 pll pll
@@ -347,14 +416,14 @@ pll pll
 	.outclk_0(clk_50),
 	.outclk_1(clk_12),
 	.outclk_2(clk_6),
-	.outclk_3(clk_108),
+	.outclk_3(clk_125),
 	.locked(pll_locked)
 );
 
 
 ///////////////////////////////////////////////////
 
-wire [63:0] status;
+wire [127:0] status;
 wire  [1:0] buttons;
 wire        forced_scandoubler;
 wire        direct_video;
@@ -378,6 +447,57 @@ wire        rom_download = ioctl_download && !ioctl_index;
 wire        nvram_download = ioctl_download && (ioctl_index == 8'd4);
 wire [24:0] dl_addr = ioctl_addr;
 
+// Profile Management
+wire [2:0] crt_profile = status[68:66];
+wire       crt_profile_off        = (crt_profile == 3'd0);
+wire       crt_profile_touch      = (crt_profile == 3'd1);
+wire       crt_profile_typical    = (crt_profile == 3'd2);
+wire       crt_profile_overdriven = (crt_profile == 3'd3);
+wire       crt_profile_neon       = (crt_profile == 3'd4);
+wire       crt_profile_pink       = (crt_profile == 3'd5);
+wire       crt_profile_custom1    = (crt_profile == 3'd6);
+wire       crt_profile_custom2    = (crt_profile == 3'd7);
+wire       crt_profile_flashing   = crt_profile_neon | crt_profile_pink;
+
+wire [2:0] crt_custom_bloom_width =
+	crt_profile_custom2 ? status[99:97] : status[76:74];
+wire [2:0] crt_custom_halo =
+	crt_profile_custom2 ? status[105:103] : status[82:80];
+wire       crt_custom_active = crt_profile_custom1 | crt_profile_custom2;
+wire       crt_custom_bloom_width_off =
+	crt_custom_active && (crt_custom_bloom_width == 3'd0);
+wire       crt_custom_halo_off =
+	crt_custom_active && (crt_custom_halo == 3'd0);
+wire [1:0] osd_off_tonemapping = status[38:37] + 2'd1;
+wire [1:0] osd_custom1_tonemapping = status[73:72] + 2'd1;
+wire [1:0] osd_custom2_tonemapping = status[96:95] + 2'd1;
+
+wire [22:0] crt_custom1_settings = {
+	status[71:69],  // Dot Scale
+	osd_custom1_tonemapping,  // Tone Mapping
+	status[76:74],  // Bloom Width
+	status[79:77],  // Bloom Curve
+	status[82:80],  // Halo
+	status[84:83],  // Halo Spread
+	status[86:85],  // Phosphor Decay
+	status[87],     // Color Space
+	status[90:88],  // Color Channels
+	status[91]      // Slot Mask
+};
+
+wire [22:0] crt_custom2_settings = {
+	status[94:92],    // Dot Scale
+	osd_custom2_tonemapping,  // Tone Mapping
+	status[99:97],    // Bloom Width
+	status[102:100],  // Bloom Curve
+	status[105:103],  // Halo
+	status[107:106],  // Halo Spread
+	status[109:108],  // Phosphor Decay
+	status[110],      // Color Space
+	status[113:111],  // Color Channels
+	status[114]       // Slot Mask
+};
+
 hps_io #(.CONF_STR(CONF_STR)) hps_io
 (
 	.clk_sys(clk_12),
@@ -385,11 +505,28 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask({is_analog_input, not_720p, mod_esb, mod_starwars, direct_video}),
+	.status_menumask({
+		1'b0,                         // F: unused
+		crt_profile_custom2,          // E: show Custom 2 editable bank
+		crt_profile_custom1,          // D: show Custom 1 editable bank
+		1'b0,                         // C: unused
+		crt_profile_flashing,         // B: show Neon/Pink flashing warning
+		crt_profile_overdriven,       // A: show 80s Overdrive info rows
+		crt_profile_typical,          // 9: show 80s Cruise Control info rows
+		crt_profile_touch,            // 8: show A Touch of CRT info rows
+		crt_profile_off,              // 7: show Off editable rows
+		crt_custom_halo_off,          // 6: disable Custom halo spread if halo is Off
+		crt_custom_bloom_width_off,   // 5: disable Custom bloom curve if bloom is Off
+		is_analog_input,              // 4: disable digital sensitivity in analog mode
+		STABLE_HEIGHT != 12'd720,     // 3: disable 120Hz outside 720p
+		mod_esb,                      // 2: hide Star Wars DIP rows
+		mod_starwars,                 // 1: hide ESB DIP rows
+		direct_video                  // 0: framework direct-video mask
+	}),
 	.forced_scandoubler(forced_scandoubler),
 	.gamma_bus(gamma_bus),
 	.direct_video(direct_video),
-	.new_vmode(new_vmode_toggle),
+	.new_vmode(1'b0),
 
 	.ioctl_download(ioctl_download),
 	.ioctl_upload(ioctl_upload),
@@ -406,10 +543,6 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.joystick_1(joy_1),
 	.joystick_l_analog_0(joy_l_analog_0)
 );
-
-// DIP switch loading — currently unused (game settings via Test Mode / NVRAM)
-// reg [7:0] sw[8];
-// always @(posedge clk_12) if (ioctl_wr && (ioctl_index==254) && !ioctl_addr[24:3]) sw[ioctl_addr[2:0]] <= ioctl_dout;
 
 wire m_fire_l   = joy[4];          // Left fire (Button A)
 wire m_fire_r   = joy[9];          // Right fire (Button Y)
@@ -438,7 +571,7 @@ wire mod_starwars = !mod_esb;
 // Video signals
 wire hblank, vblank;
 wire hs, vs;
-wire [3:0] r,g,b;
+
 
 wire reset = (RESET | status[0] |  buttons[1] | rom_download | nvram_download);
 
@@ -552,7 +685,7 @@ wire [7:0] m_dsw0 = {
 	mod_esb ? status[10:9] : (status[10:9] + 2'd1), // [3:2] Difficulty (O9A)
 	mod_esb ? ~status[8:7] : (status[8:7] + 2'd2)   // [1:0] Starting Shields (O78)
 };
-// DIP SWITCHES (SW1)	
+// DIP SWITCHES (SW1)
 wire [7:0] m_dsw1 = {
 	status[24:22],       // [7:5] Bonus Coin Adder (OMNO)
 	status[21],          // [4] Left Coin (OL)
@@ -560,30 +693,35 @@ wire [7:0] m_dsw1 = {
 	status[18:17] + 2'd2 // [1:0] Coinage (OHI, rotated +2: 0=1P/C,1=2C/P,2=Free,3=2P/C)
 };
 
-starwars starwars_core
+starwars #(
+	.HIT_FLASH_ENABLE(1'b1)
+) starwars_core
 (
 	.clk_12(clk_12),
 	.clk_50(clk_50),
-	.clk_vid(clk_108),
+	.clk_vid(clk_125),
 	.reset(reset),
 
-	.osd_raster_flicker(status[2]),
+	.osd_buffer_mode(status[40:39]),
 	.osd_audio_filter(~status[5]),   // Inverted: OSD 0=On, 1=Off
 	.osd_audio_delay(~status[6]),    // Inverted: OSD 0=On, 1=Off
-	.osd_120hz_mode(osd_120hz_mode),
-	.osd_star_pattern(status[30:28]),
-	.osd_tonemapping(status[38:37]),
-	.osd_disable_flash(status[26]),
-	.HDMI_HEIGHT(HDMI_HEIGHT),
+	.osd_crt_profile(crt_profile),
+	.osd_off_dot_mode(status[30:28]),
+	.osd_off_tonemapping(osd_off_tonemapping),
+	.osd_off_phosphor_mode(status[56:55]),
+	.osd_custom1_settings(crt_custom1_settings),
+	.osd_custom2_settings(crt_custom2_settings),
+
 	.ar(ar),
 	.VIDEO_ARX(VIDEO_ARX),
 	.VIDEO_ARY(VIDEO_ARY),
 
-	.mod_esb(mod_esb),
-	
-	.CE_PIXEL(CE_PIXEL),
+	.STABLE_HEIGHT(STABLE_HEIGHT),
+	.osd_120hz_mode_in(STABLE_120HZ),
 
-	.video_mode_stable(video_mode_stable),
+	.mod_esb(mod_esb),
+
+	.CE_PIXEL(CE_PIXEL),
 
 	// DDRAM Framebuffer Interface
 	.DDRAM_CLK(DDRAM_CLK),
@@ -597,32 +735,29 @@ starwars starwars_core
 	.DDRAM_BE(DDRAM_BE),
 	.DDRAM_WE(DDRAM_WE),
 
-	.FB_EN(FB_EN),
-	.FB_FORMAT(FB_FORMAT),
-	.FB_WIDTH(FB_WIDTH),
-	.FB_HEIGHT(FB_HEIGHT),
-	.FB_BASE(FB_BASE),
-	.FB_STRIDE(FB_STRIDE),
-	.FB_VBL(FB_VBL),
-	.FB_LL(FB_LL),
-	.FB_FORCE_BLANK(FB_FORCE_BLANK),
-	.FB_PAL_CLK(FB_PAL_CLK),
-	.FB_PAL_ADDR(FB_PAL_ADDR),
-	.FB_PAL_DOUT(FB_PAL_DOUT),
-	.FB_PAL_DIN(FB_PAL_DIN),
-	.FB_PAL_WR(FB_PAL_WR),
-	
+	.SDRAM_DQ_IN(SDRAM_DQ),
+	.SDRAM_DQ_OUT(sdram_dq_out),
+	.SDRAM_DQ_OE(sdram_dq_oe),
+	.SDRAM_CKE(SDRAM_CKE),
+	.SDRAM_nCS(SDRAM_nCS),
+	.SDRAM_nRAS(SDRAM_nRAS),
+	.SDRAM_nCAS(SDRAM_nCAS),
+	.SDRAM_nWE(SDRAM_nWE),
+	.SDRAM_DQM(sdram_dqm),
+	.SDRAM_A(SDRAM_A),
+	.SDRAM_BA(SDRAM_BA),
+
 	.audio_out_l(audio_l),
 	.audio_out_r(audio_r),
-	
-	.video_r(r),
-	.video_g(g),
-	.video_b(b),
+
+	.VGA_R(VGA_R),
+	.VGA_G(VGA_G),
+	.VGA_B(VGA_B),
 	.hsync(hs),
 	.vsync(vs),
 	.vblank(vblank),
 	.hblank(hblank),
-	
+
 	.dsw0(m_dsw0),
 	.dsw1(m_dsw1),
 	.coin1(m_coin),
@@ -635,14 +770,14 @@ starwars starwars_core
 	.test_mode(status[1]),
 	.analog_x(yoke_x),
 	.analog_y(yoke_y),
-	
+
 	.led(core_led),
-	
+
 	// ROM Download
 	.dn_addr(dl_addr),
 	.dn_data(ioctl_dout),
 	.dn_wr(ioctl_wr & rom_download),
-	
+
 	.nvram_write_pulse(nvram_write_pulse),
 	.nvram_wr_ext(nvram_wr_ext),
 	.nvram_addr_ext(nvram_addr_ext),

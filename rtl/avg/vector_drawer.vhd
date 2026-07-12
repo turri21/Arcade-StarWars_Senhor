@@ -30,7 +30,7 @@
 --  done        | STOP (timer overflow)         | LS161 carry chain -> LS02 NOR
 --              | (schematic p.25 Fig.0)        | K-input clears VCTR/CNTR
 --  xpos/ypos   | Integrator output voltage     | TL082 op-amp (7A/8A)
---  normrel_x/y | DAC output × linear_scale     | AM6012 -> LF13201 (6A/7B)
+--  normrel_x/y | DAC output * linear_scale     | AM6012 -> LF13201 (6A/7B)
 --  hw_timer    | LS161 counter chain value     | 1D/1C/1B/2B cascaded counters
 --
 -- CENTER sets CNTR=1 -> GO=1, and /CENTER resets integrators. On hardware
@@ -41,17 +41,17 @@
 --   - beam sits at center for the full timer duration
 --
 -- ============================================================================
--- 
+--
 -- This program is free software: you can redistribute it and/or modify
 -- it under the terms of the GNU General Public License as published by
 -- the Free Software Foundation, either version 3 of the License, or
 -- (at your option) any later version.
--- 
+--
 -- This program is distributed in the hope that it will be useful,
 -- but WITHOUT ANY WARRANTY; without even the implied warranty of
 -- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 -- GNU General Public License for more details.
--- 
+--
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
@@ -106,7 +106,7 @@ begin
     -- Combinational flag ensures the effect tag is immediately available
     is_dot <= '1' when (rel_x = "0000000000000" and rel_y = "0000000000000") else '0';
 
-    -- DAC transfer function: output = input × (N+1)/256, where N = NOT(linear_scale).
+    -- DAC transfer function: output = input * (N+1)/256, where N = NOT(linear_scale).
     -- Range: 1 (linear_scale=0xFF, near-zero) to 256 (linear_scale=0x00, max speed).
     scale_factor <= (('0' & (linear_scale xor x"FF")) + 1);
 
@@ -118,10 +118,10 @@ begin
     process(clk)
     begin
         if clk'event and clk='1' then
-            -- ── STATE: ZERO (Priority 1) ──────────────────────────
+            -- STATE: ZERO (Priority 1)
             -- Asserted by avg.vhd during: VGRST, halt, CENTER.
             -- /CENTER analog signal resets integrators (zero clears xpos/ypos),
-            -- while CNTR=1 → GO=1 starts the timer (draw latches hw_timer).
+            -- while CNTR=1 -> GO=1 starts the timer (draw latches hw_timer).
             if zero='1' then
                 xpos<=(others=>'0');
                 ypos<=(others=>'0');
@@ -146,7 +146,7 @@ begin
                     itsdone<='0'; -- enters DRAWING briefly (draw_target=0 -> resolves in 1 clk)
                 end if;
 
-            -- ── STATE: IDLE (Priority 2) ─────────────────────────
+            -- STATE: IDLE (Priority 2)
             -- itsdone='1': drawer is ready, waiting for draw pulse.
             -- draw='1': pulse from avg.vhd at STROBE3 (VCTR/SVEC).
             -- Latches normrel_x/y and computes draw_target from
@@ -166,7 +166,7 @@ begin
                     end if;
                     draw_counter<=(others=>'0');
                 end if;
-            -- ── STATE: DRAWING (Priority 3, itsdone='0') ─────────
+            -- STATE: DRAWING (Priority 3, itsdone='0')
             -- draw_counter >= draw_target, transitions to IDLE.
             else
                 if draw_counter >= draw_target then
@@ -185,7 +185,7 @@ begin
     -- Output extraction: xpos(31:21) = 11-bit signed integer, 20:18 = 3-bit fraction
     -- Total 14-bit output (31 downto 18).
     -- Guard-bit overflow: bit 33 = sign, bits 32:31 must all match sign for in-range.
-    -- (Checking 32:31 so positions ±1024..±2047 are correctly saturated
+    -- (Checking 32:31 so positions +/-1024..+/-2047 are correctly saturated
     --  instead of wrapping the output through the sign boundary.)
     xout <= "01111111111000" when (xpos(33)='0' and xpos(32 downto 31) /= "00") else
             "10000000000000" when (xpos(33)='1' and xpos(32 downto 31) /= "11") else

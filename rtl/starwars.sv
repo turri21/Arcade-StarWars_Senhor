@@ -2,7 +2,7 @@
 //  Arcade: Star Wars Port to MiSTer FPGA by Videodr0me 2026
 //
 //  Implements the original Atari Star Wars PCB: main 6809 CPU, audio 6809 CPU,
-//  4× POKEY, RIOT, TMS5220 speech, Mathbox, cycle exact AVG vector generator, 
+//  4x POKEY, RIOT, TMS5220 speech, Mathbox, cycle exact AVG vector generator,
 //  ADC, inter-CPU latches, and analog audio mixing/filtering.
 //
 //  This program is free software; you can redistribute it and/or modify it
@@ -22,31 +22,38 @@
 // Slapstick and Empire Strikes Back support by derpyder
 //============================================================================
 
-module starwars (
+module starwars #(
+	parameter HIT_FLASH_ENABLE = 1'b1
+) (
 	input         clk_12,
 	input         clk_50,
-	input         clk_vid,  // Video pixel clock (always 107.14 MHz)
+	input         clk_vid,
 	input         reset,
 
 	// OSD Settings
-	input         osd_raster_flicker,
+	input   [1:0] osd_buffer_mode,
 	input         osd_audio_filter,   // 1=On (TL084 LPF active), 0=Off (bypass)
 	input         osd_audio_delay,    // 1=On (Reticon delay/stereo active), 0=Off (bypass)
 	input         osd_120hz_mode,     // 1=120Hz (ce_pix always high), 0=60Hz (ce_pix toggles)
 	input         video_mode_stable,
-	input   [2:0] osd_star_pattern,   // Dot scaling selected from OSD
-	input   [1:0] osd_tonemapping,    // 0=Linear 1, 1=Linear 2, 2=Bright, 3=Off
-	input         osd_disable_flash,  // Option to disable hit flash
+	input   [2:0] osd_crt_profile,
+	input   [2:0] osd_off_dot_mode,
+	input   [1:0] osd_off_tonemapping,    // 0=Linear 1, 1=Linear 2, 2=Bright, 3=Off
+	input   [1:0] osd_off_phosphor_mode,
+	input  [22:0] osd_custom1_settings,
+	input  [22:0] osd_custom2_settings,
 
 	// Mod selector: 0 = Star Wars (default), 1 = Empire Strikes Back.
 	// ESB extends the SW main map with a slapstic-protected page at
 	// $8000-$9FFF and a wider main ROM (64KB vs SW's 32KB).
+	input         osd_120hz_mode_in,
+	input  [11:0] STABLE_HEIGHT,
 	input         mod_esb,
 	input  [11:0] HDMI_HEIGHT,
 	input  [1:0]  ar,
 	output [12:0] VIDEO_ARX,
 	output [12:0] VIDEO_ARY,
-	
+
 	// DDRAM Framebuffer Interface
 	output        DDRAM_CLK,
 	input         DDRAM_BUSY,
@@ -59,35 +66,34 @@ module starwars (
 	output  [7:0] DDRAM_BE,
 	output        DDRAM_WE,
 
-	output        CE_PIXEL,
-	output        FB_EN,
-	output  [4:0] FB_FORMAT,
-	output [11:0] FB_WIDTH,
-	output [11:0] FB_HEIGHT,
-	output [31:0] FB_BASE,
-	output [13:0] FB_STRIDE,
-	input         FB_VBL,
-	input         FB_LL,
-	output        FB_FORCE_BLANK,
-	output        FB_PAL_CLK,
-	output  [7:0] FB_PAL_ADDR,
-	output [23:0] FB_PAL_DOUT,
-	input  [23:0] FB_PAL_DIN,
-	output        FB_PAL_WR,
+	// SDRAM for delay of primary framebuffer
+	input  [15:0] SDRAM_DQ_IN,
+	output [15:0] SDRAM_DQ_OUT,
+	output        SDRAM_DQ_OE,
+	output        SDRAM_CKE,
+	output        SDRAM_nCS,
+	output        SDRAM_nRAS,
+	output        SDRAM_nCAS,
+	output        SDRAM_nWE,
+	output  [1:0] SDRAM_DQM,
+	output [12:0] SDRAM_A,
+	output  [1:0] SDRAM_BA,
 
-	// Audio (pseudo-stereo: dry ± wet from BBD delay)
+	output        CE_PIXEL,
+	// Audio (pseudo-stereo: dry +/- wet from BBD delay)
 	output [15:0] audio_out_l,
 	output [15:0] audio_out_r,
-	
+
 	// Video timing (active pixel data goes through FB/DDRAM path)
-	output [2:0]  video_r,  // Unused — zeroed
-	output [2:0]  video_g,
-	output [2:0]  video_b,
+	output [7:0]  VGA_R,
+	output [7:0]  VGA_G,
+	output [7:0]  VGA_B,
 	output        hsync,    // Used for Video timing
 	output        vsync,
 	output        vblank,
 	output        hblank,
-	
+
+
 	// Inputs
 	input  [7:0]  dsw0,
 	input  [7:0]  dsw1,
@@ -101,15 +107,15 @@ module starwars (
 	input         test_mode,
 	input  [7:0]  analog_x,
 	input  [7:0]  analog_y,
-	
+
 	// LEDs
 	output [2:0]  led,
-	
+
 	// ROM Download
 	input [24:0]  dn_addr,
 	input  [7:0]  dn_data,
 	input         dn_wr,
-	
+
 	// NVRAM IOCTL
 	output        nvram_write_pulse,
 	input         nvram_wr_ext,
@@ -132,17 +138,29 @@ module starwars (
 	assign      main_firq = 1'b0;
 	assign      main_nmi = 1'b0;
 
-	// Clock Domain Crossing (CDC) Reset Synchronizer for clk_12
+	// CDC Reset Synchronizer for clk_12
 	reg [1:0] rst_12_sync = 2'b11;
 	always @(posedge clk_12) rst_12_sync <= {rst_12_sync[0], reset};
 	wire rst_12 = rst_12_sync[1];
+
+	wire [2:0] effective_dot_mode;
+	wire [1:0] effective_tonemapping;
+	wire [2:0] effective_bloom_width;
+	wire [2:0] effective_bloom_curve;
+	wire [2:0] effective_halo_filter;
+	wire [1:0] effective_phosphor_mode;
+	wire [1:0] effective_halo_spread;
+	wire       effective_color_space;
+	wire [2:0] effective_color_channels;
+	wire       effective_slot_mask;
+	wire       effective_full_bypass;
 
 	// ~246.09Hz Timer for Main IRQ
 	// clk_12 is 12.096 MHz. Hardware divider is 4096 * 12 = 49152 cycles.
 	// 12096000 / 49152 = 246.09375 Hz.
 	reg [15:0] irq_timer;
 	wire irq_ack = (main_addr >= 16'h4660 && main_addr <= 16'h467F) && !main_rw && main_vma;
-	
+
 	always @(posedge clk_12) begin
 		if (rst_12) begin
 			irq_timer <= 16'd0;
@@ -154,7 +172,7 @@ module starwars (
 			end else begin
 				irq_timer <= irq_timer + 16'd1;
 			end
-			
+
 			if (irq_ack) begin
 				main_irq_reg <= 1'b0; // Clear IRQ
 			end
@@ -197,7 +215,7 @@ module starwars (
 	wire        aud_vma;
 	// Sound Reset and Latches clear (0x46E0)
 	wire soundrst_we = (main_addr == 16'h46E0) && !main_rw && main_vma;
-	
+
 	reg [7:0] aud_rst_cnt;
 	always @(posedge clk_12) begin
 		if (rst_12) begin
@@ -265,21 +283,24 @@ module starwars (
 
 	// Compute base-relative addresses for each ROM region
 	wire [13:0] dn_banked_addr = dn_addr[13:0];                         // 0x0000 base, naturally aligned
-	wire [14:0] dn_main_addr   = (dn_addr[14:0] - 15'h4000);             // 0x4000 base → 0x0000-0x7FFF
+	wire [14:0] dn_main_addr   = (dn_addr[14:0] - 15'h4000);             // 0x4000 base -> 0x0000-0x7FFF
 	wire [11:0] dn_vec_addr    = dn_addr[11:0];                          // 0xC000 or 0x1C000 base — both 4KB-aligned
-	wire [13:0] dn_aud_addr    = (dn_addr[13:0] - 14'h1000);             // SW: 0xD000 base → 0x0000-0x3FFF (16KB)
-	wire  [7:0] dn_avg_prom_addr = dn_addr[7:0];                         // 0x11000 base → 0x00-0xFF
-	wire [11:0] dn_mb_addr     = (dn_addr[11:0] - 12'h100);              // 0x11100 base → 0x000-0xFFF
+	wire [13:0] dn_aud_addr    = (dn_addr[13:0] - 14'h1000);             // SW: 0xD000 base -> 0x0000-0x3FFF (16KB)
+	wire  [7:0] dn_avg_prom_addr = dn_addr[7:0];                         // 0x11000 base -> 0x00-0xFF
+	wire [11:0] dn_mb_addr     = (dn_addr[11:0] - 12'h100);              // 0x11100 base -> 0x000-0xFFF
 
 	// ESB-specific relative addresses
 	wire [15:0] dn_esb_main_addr = dn_addr[15:0];                         // 0x00000-0x0FFFF → 0x0000-0xFFFF
 	wire [14:0] dn_esb_slap_addr = dn_addr[14:0] - 15'h4000;              // 0x14000-0x1BFFF → 0x0000-0x7FFF (32KB)
 	wire [14:0] dn_esb_aud_addr  = dn_addr[14:0] - 15'h6000;              // 0x1E000-0x25FFF → 0x0000-0x7FFF (32KB)
 
+	// Outlatch (0x4680 - 0x4687)
+	reg [7:0] outlatch;
+
 	// Mathbox (Matrix Processor)
 	wire math_run;
 	wire [7:0] math_dout;
-	
+
 	mathbox mbox (
 		.clk(clk_12),
 		.ce(ce_1m5),
@@ -301,12 +322,12 @@ module starwars (
 	reg [7:0] adc_data;
 	wire adc_start_0 = (main_addr == 16'h46C0) && !main_rw && main_vma; // Pitch (Y)
 	wire adc_start_1 = (main_addr == 16'h46C1) && !main_rw && main_vma; // Yaw (X)
-	
-	// MiSTer joystick analog is signed -128..+127. 
+
+	// MiSTer joystick analog is signed -128..+127.
 	// Arcade expects 0x00..0xFF centered at 0x80.
 	wire signed [8:0] analog_y_s = $signed(analog_y);
 	wire signed [8:0] analog_x_s = $signed(analog_x);
-	
+
 	// Add offset to center (0x80 = 0)
 	wire signed [8:0] digital_y_w = analog_y_s + 9'sd128;
 	wire signed [8:0] digital_x_w = analog_x_s + 9'sd128;
@@ -321,13 +342,12 @@ module starwars (
 	wire adc_cs = (main_addr >= 16'h4380 && main_addr <= 16'h439F) && main_vma;
 
 	// Outlatch (0x4680 - 0x4687)
-	reg [7:0] outlatch;
 	wire outlatch_we = (main_addr >= 16'h4680 && main_addr <= 16'h4687) && !main_rw && main_vma;
 	always @(posedge clk_12) begin
 		if (rst_12) outlatch <= 8'h00;
 		else if (outlatch_we) outlatch[main_addr[2:0]] <= main_dout[7];
 	end
-	
+
 	// Bank select is bit 4
 	reg rom_bank;
 	always @(*) rom_bank = outlatch[4];
@@ -343,7 +363,7 @@ module starwars (
 
 	// Main CPU writes to Soundlatch (0x4400)
 	wire soundlatch_we = (main_addr == 16'h4400) && !main_rw && main_vma;
-	
+
 	// Audio CPU reads from Soundlatch (0x0800 - 0x0FFF)
 	wire soundlatch_re = (aud_addr >= 16'h0800 && aud_addr <= 16'h0FFF) && aud_rw && aud_vma;
 
@@ -386,6 +406,7 @@ module starwars (
 	wire        cpu_avg_halted;
 	wire [13:0] avg_x;
 	wire [13:0] avg_y;
+	wire [7:0]  avg_z_raw;
 	wire [7:0]  avg_z;
 	wire [2:0]  avg_rgb;
 	wire [15:0] avg_addr;
@@ -401,7 +422,7 @@ module starwars (
 	wire main_ram_cs = (main_addr < 16'h3000) && main_vma;
 	reg [7:0] main_ram_dout;
 	reg [7:0] avg_ram_dout;
-	
+
 	always @(posedge clk_12) begin
 		if (main_ram_cs && ~main_rw) main_ram[main_addr[13:0]] <= main_dout;
 		main_ram_dout <= main_ram[main_addr[13:0]];
@@ -412,7 +433,7 @@ module starwars (
 	(* ramstyle = "M10K" *) reg [7:0] cpu_math_ram [0:2047];
 	wire cpu_math_ram_cs = (main_addr >= 16'h4800 && main_addr <= 16'h4FFF) && main_vma;
 	reg [7:0] cpu_math_ram_dout;
-	
+
 	always @(posedge clk_12) begin
 		if (cpu_math_ram_cs && ~main_rw) cpu_math_ram[main_addr[10:0]] <= main_dout;
 		cpu_math_ram_dout <= cpu_math_ram[main_addr[10:0]];
@@ -427,8 +448,8 @@ module starwars (
 		.cpu_addr_a(main_addr[11:0]), .cpu_dout_a(vec_rom_dout_cpu),
 		.cpu_addr_b(avg_addr[11:0]),  .cpu_dout_b(vec_rom_dout_avg)
 	);
-	
-	// Banked ROM (8KB window at 0x6000-0x7FFF, 2 × 8KB pages = 16KB total)
+
+	// Banked ROM (8KB window at 0x6000-0x7FFF, 2 x 8KB pages = 16KB total)
 	wire [7:0] banked_rom_dout;
 	rom_download #(14) banked_rom (
 		.clk(clk_12),
@@ -506,7 +527,7 @@ module starwars (
 		.cpu_addr_b(15'h0), .cpu_dout_b()
 	);
 
-	// Audio ROM (16KB: 0x4000 - 0x7FFF, mirrored at 0xC000 - 0xFFFF) — Star Wars.
+	// Audio ROM (16KB: 0x4000 - 0x7FFF, mirrored at 0xC000 - 0xFFFF) - Star Wars.
 	wire [7:0] aud_rom_dout;
 	rom_download #(14) aud_rom (
 		.clk(clk_12),
@@ -544,7 +565,7 @@ module starwars (
 	reg [7:0] aud_ram [0:2047];
 	wire aud_ram_cs = (aud_addr >= 16'h2000 && aud_addr <= 16'h27FF) && aud_vma;
 	reg [7:0] aud_ram_dout;
-	
+
 	always @(posedge clk_12) begin
 		if (aud_ram_cs && ~aud_rw) aud_ram[aud_addr[10:0]] <= aud_dout;
 		aud_ram_dout <= aud_ram[aud_addr[10:0]];
@@ -554,7 +575,7 @@ module starwars (
 	(* ramstyle = "M10K, no_rw_check" *) reg [7:0] nvram [0:255];
 	wire nvram_cs = (main_addr >= 16'h4500 && main_addr <= 16'h45FF) && main_vma;
 	reg [7:0] nvram_dout;
-	
+
 	always @(posedge clk_12) begin
 		if (nvram_cs && ~main_rw) nvram[main_addr[7:0]] <= main_dout;
 		nvram_dout <= nvram[main_addr[7:0]];
@@ -593,11 +614,11 @@ module starwars (
 		else if (main_addr >= 16'h6000 && main_addr <= 16'h7FFF) main_din_mux = banked_rom_dout;
 		else if (main_addr >= 16'h8000) main_din_mux = main_rom_dout;
 		else if (adc_cs) main_din_mux = adc_data;
-		
+
 		// Communication
 		else if (main_addr == 16'h4400) main_din_mux = mainlatch;
 		else if (main_addr == 16'h4401) main_din_mux = {soundlatch_full, mainlatch_full, 6'h00};
-		
+
 		// Input ports (active-low, accent bits per original schematics)
 		// IN0: D7=L.Fire D6=R.Fire D5=Spare(1) D4=SelfTest D3=Slam(1) D2=AuxCoin D1=CoinL D0=CoinR
 		else if (main_addr >= 16'h4300 && main_addr <= 16'h431F) main_din_mux = {~fire_l, ~fire_r, 1'b1, ~test_mode, 1'b1, ~aux_coin, ~coin1, ~coin2}; // IN0
@@ -616,7 +637,7 @@ module starwars (
 	avg vector_generator (
 		.clk(clk_12),
 		.clken(ce_1m5),
-		
+
 		// CPU Interface (Internal registers / GO / RST)
 		.cpu_addr(main_addr[13:0]),
 		// Bus arbitration: on real hardware, EVMEM gates the AVG state machine
@@ -626,22 +647,22 @@ module starwars (
 		.cpu_rw_l(main_rw),
 		.cpu_data_in(),
 		.cpu_data_out(main_dout),
-		
+
 		.vgrst(rst_12 | avg_rst_cmd),
 		.vggo(avg_go),
 		.halted(avg_halted),
-		
+
 		// External Memory for Vector Instructions
 		.avg_addr_out(avg_addr),
 		.avg_data_in(avg_din),
-		
+
 		// Vector Outputs
 		.xout(avg_x),
 		.yout(avg_y),
-		.zout(avg_z),
+		.zout(avg_z_raw),
 		.rgbout(avg_rgb),
 		.is_dot(avg_is_dot),
-		
+
 		.dn_addr(dn_avg_prom_addr),
 		.dn_data(dn_data),
 		.dn_wr(dn_avg_prom_cs)
@@ -650,17 +671,17 @@ module starwars (
 	// Audio Chips (POKEY x4)
 	wire [7:0] pokey0_dout, pokey1_dout, pokey2_dout, pokey3_dout;
 	wire [7:0] pokey0_out, pokey1_out, pokey2_out, pokey3_out;
-	
+
 	// Star Wars POKEY interleaved mapping (0x1800 - 0x183F)
 	wire [1:0] pokey_num = aud_addr[4:3];
 	wire [3:0] pokey_reg = {aud_addr[5], aud_addr[2:0]};
 	wire pokey_area = (aud_addr >= 16'h1800 && aud_addr <= 16'h183F) && aud_vma;
-	
+
 	wire pokey0_cs = pokey_area && (pokey_num == 2'd0);
 	wire pokey1_cs = pokey_area && (pokey_num == 2'd1);
 	wire pokey2_cs = pokey_area && (pokey_num == 2'd2);
 	wire pokey3_cs = pokey_area && (pokey_num == 2'd3);
-	
+
 	// POKEY 0
 	POKEY pokey0 (
 		.CLK(clk_12),
@@ -679,7 +700,7 @@ module starwars (
 	// POKEY 1
 	POKEY pokey1 (
 		.CLK(clk_12),
-		.ENA(ce_1m5), 
+		.ENA(ce_1m5),
 		.ADDR(pokey_reg),
 		.DIN(aud_dout),
 		.RW_L(aud_rw),
@@ -864,10 +885,10 @@ module starwars (
 		.audio_out(filtered_mix)
 	);
 
-	// --- Reticon R5106 Delay (13.5 ms) — Pseudo-Stereo ---
+	// Reticon R5106 Delay (13.5 ms) - Pseudo-Stereo
 	// The original PCB routes the delayed signal to stereo summing amps
 	// (Sheet 16B, fig 2) alongside the dry signal. My interpretation:
-	// Left = dry + wet, Right = dry − wet (“synthesized stereo” per SWSIG.DOC).
+	// Left = dry + wet, Right = dry - wet ("synthesized stereo" per SWSIG.DOC).
 	wire signed [16:0] final_mix_l;
 	wire signed [16:0] delay_wet;
 	reticon_r5106 pcb_delay (
@@ -880,7 +901,7 @@ module starwars (
 		.audio_wet(delay_wet)
 	);
 
-	// Right channel: dry − wet
+	// Right channel: dry - wet
 	wire signed [16:0] final_mix_r = filtered_mix - delay_wet;
 
 	// =========================================================================
@@ -898,7 +919,7 @@ module starwars (
 			else
 				audio_out_l_reg <= final_mix_l[15:0];
 
-			// Right channel (dry − wet)
+			// Right channel (dry - wet)
 			if (final_mix_r > 17'sd32767)
 				audio_out_r_reg <= 16'sd32767;
 			else if (final_mix_r < -17'sd32768)
@@ -967,238 +988,282 @@ module starwars (
 		z_lut[255] = 8'd255;
 	end
 
+	// Magnetic Inertia (Hotspot at line start)
+	wire raw_beam_on = (|avg_z_raw && (avg_rgb != 3'b000));
+	reg raw_beam_on_d = 0;
+	always @(posedge clk_12) begin
+		raw_beam_on_d <= raw_beam_on;
+	end
+
+	wire [8:0] z_base = {1'b0, avg_z_raw};
+	wire [8:0] z_inertia_soft = (raw_beam_on && !raw_beam_on_d) ? (z_base + (z_base >> 1)) : z_base;
+	assign avg_z = (z_inertia_soft > 9'd232) ? 8'd232 : z_inertia_soft[7:0];
+
 	// Linear 1 (x1.21 expansion, maps 0-210 to 0-255)
 	wire [16:0] linear1_mult = avg_z * 17'd311;
 	wire [7:0] linear1_final_z = (avg_z >= 8'd210) ? 8'd255 : linear1_mult[15:8];
 
-	// Linear 2 (x1.52 expansion, current)
+	// Linear 2 (x1.52 expansion)
 	wire [16:0] linear2_mult = avg_z * 17'd389;
 	wire [7:0] linear2_final_z = (avg_z >= 8'd168) ? 8'd255 : linear2_mult[15:8];
 
-	wire [7:0] final_z = 
-		(osd_tonemapping == 2'd0) ? linear1_final_z : // Linear 1
-		(osd_tonemapping == 2'd1) ? linear2_final_z : // Linear 2
-		(osd_tonemapping == 2'd2) ? z_lut[avg_z] :    // Bright (HDR LUT)
+	wire [7:0] final_z =
+		(effective_tonemapping == 2'd0) ? linear1_final_z : // Linear 1
+		(effective_tonemapping == 2'd1) ? linear2_final_z : // Linear 2
+		(effective_tonemapping == 2'd2) ? z_lut[avg_z] :    // Bright (LUT)
 		avg_z; // Off
-	
-	// =========================================================================
-	// Resolution Detection and Scaling
-	// =========================================================================
-	
-	reg [11:0] fb_width_tmp;
-	reg [11:0] fb_height_tmp;
-	reg [13:0] fb_stride_tmp;
-	reg [11:0] x_center;
-	reg [11:0] y_center;
-	reg [12:0] auto_arx;
-	reg [12:0] auto_ary;
 
-	reg [11:0] h_total_reg;
-	reg [11:0] v_total_reg;
-	reg [11:0] hs_start_reg;
-	reg [11:0] hs_end_reg;
-	reg [11:0] vs_start_reg;
-	reg [11:0] vs_end_reg;
+	// Resolution Detection, Scaling & Video Timings
+	reg [11:0] fb_width = 12'd640;
+	reg [11:0] fb_height = 12'd480;
+	reg [11:0] x_center = 12'd320;
+	reg [11:0] y_center = 12'd241;
+	reg [12:0] auto_arx = 13'h1000 | 13'd640;
+	reg [12:0] auto_ary = 13'h1000 | 13'd480;
+
+	vfb_profile_resolver crt_profiles (
+		.profile(osd_crt_profile),
+		.fb_height(fb_height),
+		.off_dot_mode(osd_off_dot_mode),
+		.off_tonemapping(osd_off_tonemapping),
+		.off_phosphor_mode(osd_off_phosphor_mode),
+		.custom1_settings(osd_custom1_settings),
+		.custom2_settings(osd_custom2_settings),
+		.dot_mode(effective_dot_mode),
+		.tonemapping(effective_tonemapping),
+		.bloom_width(effective_bloom_width),
+		.bloom_curve(effective_bloom_curve),
+		.halo_filter(effective_halo_filter),
+		.halo_spread(effective_halo_spread),
+		.phosphor_mode(effective_phosphor_mode),
+		.color_space(effective_color_space),
+		.color_channels(effective_color_channels),
+		.slot_mask(effective_slot_mask),
+		.full_bypass(effective_full_bypass)
+	);
+
+	reg [11:0] h_total_reg = 12'd992;
+	reg [11:0] v_total_reg = 12'd524;
+	reg [11:0] hs_start_reg = 12'd720;
+	reg [11:0] hs_end_reg = 12'd816;
+	reg [11:0] vs_start_reg = 12'd490;
+	reg [11:0] vs_end_reg = 12'd492;
+
+	reg is_1080p = 1'b0;
+	reg is_480p  = 1'b1;
+	reg is_240p  = 1'b0;
 
 	reg signed [11:0] x_scaled;
 	reg signed [11:0] y_scaled;
 
-	// 19-bit sign-extended AVG coordinates for shift-and-add scaling math.
-	// Auto sign-extends 14->19 to safely hold values shifted left by 5 (x32).
-	wire signed [18:0] avg_x_ext = $signed(avg_x);
-	wire signed [18:0] avg_y_ext = $signed(avg_y);
-	
-	wire is_1080p = (HDMI_HEIGHT >= 12'd1080 && HDMI_HEIGHT < 12'd1400);
-	wire is_480p  = (HDMI_HEIGHT >= 12'd480  && HDMI_HEIGHT < 12'd720);
-	wire is_240p  = (HDMI_HEIGHT < 12'd480);
+	// 22-bit sign-extended AVG coordinates for shift-and-add scaling math.
+	// Auto sign-extends 14->22 to safely hold values shifted left by 7 (x128).
+	wire signed [21:0] avg_x_ext = $signed(avg_x);
+	wire signed [21:0] avg_y_ext = $signed(avg_y);
+
+	reg [11:0] stable_height_meta = 12'd480;
+
+	reg osd_120hz_meta;
+	reg osd_120hz_vid = 0;
+	reg fb_reset_vid = 1'b0;
+
+	reg [11:0] fb_width_next;
+	reg [11:0] fb_height_next;
+	reg [11:0] x_center_next;
+	reg [11:0] y_center_next;
+	reg [12:0] auto_arx_next;
+	reg [12:0] auto_ary_next;
+	reg [11:0] h_total_next;
+	reg [11:0] v_total_next;
+	reg [11:0] hs_start_next;
+	reg [11:0] hs_end_next;
+	reg [11:0] vs_start_next;
+	reg [11:0] vs_end_next;
+	reg is_1080p_next;
+	reg is_480p_next;
+	reg is_240p_next;
+
+	always @(*) begin
+		is_1080p_next = (stable_height_meta >= 12'd1080 &&
+		                 stable_height_meta < 12'd1400);
+		is_480p_next  = (stable_height_meta >= 12'd480 &&
+		                 stable_height_meta < 12'd720);
+		is_240p_next  = (stable_height_meta != 12'd0 &&
+		                 stable_height_meta < 12'd480);
+
+		if (is_1080p_next) begin
+			// 1080p Mode
+			fb_width_next  = 12'd1472;
+			fb_height_next = 12'd1080;
+			x_center_next  = 12'd736;
+			y_center_next  = 12'd525;
+			auto_arx_next  = 13'h1000 | 13'd1472;
+			auto_ary_next  = 13'h1000 | 13'd1080;
+
+			h_total_next  = 12'd1851; // total 1852
+			v_total_next  = 12'd1124; // total 1125
+			hs_start_next = 12'd1600; // front 128
+			hs_end_next   = 12'd1688; // sync 88, back 164
+			vs_start_next = 12'd1088; // front 8
+			vs_end_next   = 12'd1093; // sync 5, back 32
+
+		end else if (is_240p_next) begin
+			// 15kHz CRT Mode (Target: 240p Framebuffer)
+			fb_width_next  = 12'd640;
+			fb_height_next = 12'd240;
+			x_center_next  = 12'd320;
+			y_center_next  = 12'd121;
+			auto_arx_next  = 13'h1000 | 13'd640;
+			auto_ary_next  = 13'h1000 | 13'd240;
+
+			h_total_next  = 12'd993;  // total 994
+			v_total_next  = 12'd261;  // total 262
+			hs_start_next = 12'd720;  // front 80
+			hs_end_next   = 12'd816;  // sync 96, back 178
+			vs_start_next = 12'd245;  // front 5
+			vs_end_next   = 12'd248;  // sync 3, back 14
+
+		end else if (is_480p_next) begin
+			// 480p Mode (Target: 480p Framebuffer)
+			fb_width_next  = 12'd640;
+			fb_height_next = 12'd480;
+			x_center_next  = 12'd320;
+			y_center_next  = 12'd241;
+			auto_arx_next  = 13'h1000 | 13'd640;
+			auto_ary_next  = 13'h1000 | 13'd480;
+
+			h_total_next  = 12'd992;  // total 993
+			v_total_next  = 12'd524;  // total 525
+			hs_start_next = 12'd720;  // front 80
+			hs_end_next   = 12'd816;  // sync 96, back 177
+			vs_start_next = 12'd490;  // front 10
+			vs_end_next   = 12'd492;  // sync 2, back 33
+
+		end else begin
+			// Default / 720p / 1440p+
+			fb_width_next  = 12'd980;
+			fb_height_next = 12'd720;
+			x_center_next  = 12'd490;
+			y_center_next  = 12'd350;
+
+			if (stable_height_meta >= 12'd1440) begin
+				auto_arx_next = 13'h1000 | 13'd1960;
+				auto_ary_next = 13'h1000 | 13'd1440;
+			end else begin
+				auto_arx_next = 13'h1000 | 13'd980;
+				auto_ary_next = 13'h1000 | 13'd720;
+			end
+
+			h_total_next  = 12'd1388; // total 1389
+			v_total_next  = 12'd749;  // total 750
+			hs_start_next = 12'd1108; // front 128
+			hs_end_next   = 12'd1196; // sync 88, back 193
+			vs_start_next = 12'd728;  // front 8
+			vs_end_next   = 12'd733;  // sync 5, back 17
+		end
+	end
+
+	// Latch the whole video-mode package together. Downstream timing, readout,
+	// rasterizer, and cache-clear logic see only registered dimensions.
+	always @(posedge clk_vid) begin
+		stable_height_meta <= STABLE_HEIGHT;
+
+		osd_120hz_meta <= osd_120hz_mode_in;
+		osd_120hz_vid  <= osd_120hz_meta;
+		fb_reset_vid   <= (stable_height_meta == 12'd0);
+
+		if (stable_height_meta != 12'd0) begin
+			fb_width     <= fb_width_next;
+			fb_height    <= fb_height_next;
+			x_center     <= x_center_next;
+			y_center     <= y_center_next;
+			auto_arx     <= auto_arx_next;
+			auto_ary     <= auto_ary_next;
+			h_total_reg  <= h_total_next;
+			v_total_reg  <= v_total_next;
+			hs_start_reg <= hs_start_next;
+			hs_end_reg   <= hs_end_next;
+			vs_start_reg <= vs_start_next;
+			vs_end_reg   <= vs_end_next;
+			is_1080p     <= is_1080p_next;
+			is_480p      <= is_480p_next;
+			is_240p      <= is_240p_next;
+		end
+	end
 
 	always @(*) begin
 		if (is_1080p) begin
-			// ---------------------------------------------------------
-			// 1080p Mode
-			// ---------------------------------------------------------
-
-			fb_width_tmp  = 12'd1472;
-			fb_height_tmp = 12'd1080;
-			fb_stride_tmp = 14'd8192;
-			x_center  = 12'd736;
-			y_center  = 12'd525;
-			auto_arx  = 13'h1000 | 13'd1472;
-			auto_ary  = 13'h1000 | 13'd1080;
-			
-			h_total_reg  = 12'd1587; // 1588 clocks -> mathematically 59.973 Hz
-			v_total_reg  = 12'd1124; // 1125 lines (Standard 45 lines of VBLANK)
-			hs_start_reg = 12'd1502;
-			hs_end_reg   = 12'd1542;
-			vs_start_reg = 12'd1084;
-			vs_end_reg   = 12'd1089;
-			
 			// X_scale = 21/16 (1.3125) -> (X*16 + X*4 + X*1) / 16 (shifted by extra 3 bits for fraction)
 			x_scaled = ((avg_x_ext << 4) + (avg_x_ext << 2) + avg_x_ext) >>> 7;
-			// Y_scale = 15/16 (0.9375) -> (Y*16 - Y*1) / 16 (shifted by extra 3 bits for fraction)
-			y_scaled = ((avg_y_ext << 4) - avg_y_ext) >>> 7;
-			
+			// Y_scale = 29/32 (0.90625) -> (Y*32 - Y*2 - Y*1) / 32
+			y_scaled = ((avg_y_ext << 5) - (avg_y_ext << 1) - avg_y_ext) >>> 8;
 		end else if (is_240p) begin
-			// ---------------------------------------------------------
-			// 15kHz CRT Mode (Target: 240p Framebuffer)
-			// ---------------------------------------------------------
-			// Active area is 630x236 mapped directly to 640x240 buffer
-			fb_width_tmp  = 12'd640;
-			fb_height_tmp = 12'd240;
-			fb_stride_tmp = 14'd4096;
-			x_center  = 12'd320;
-			y_center  = 12'd121;
-			auto_arx  = 13'h1000 | 13'd640;
-			auto_ary  = 13'h1000 | 13'd240;
-			
-			h_total_reg  = 12'd851;  // 852 clocks (at 13.39 MHz -> 15.72 kHz)
-			v_total_reg  = 12'd261;  // 262 lines  (at 15.72 kHz -> 60.00 Hz)
-			hs_start_reg = 12'd680;
-			hs_end_reg   = 12'd740;
-			vs_start_reg = 12'd245;
-			vs_end_reg   = 12'd248;
-			
 			// X_scale = 41/64 (0.6406) -> max 499.5 * 41/64 = +/- 320 (Active X: 640)
 			x_scaled = ((avg_x_ext << 5) + (avg_x_ext << 3) + avg_x_ext) >>> 9;
 			// Y_scale = 27/128 (0.2109) -> 560 * 27/128 = 118 (Active Y: ~236)
 			y_scaled = ((avg_y_ext << 4) + (avg_y_ext << 3) + (avg_y_ext << 1) + avg_y_ext) >>> 10;
-			
 		end else if (is_480p) begin
-			// ---------------------------------------------------------
-			// 480p Mode (Target: 480p Framebuffer)
-			// ---------------------------------------------------------
-
-			fb_width_tmp  = 12'd640;
-			fb_height_tmp = 12'd480;
-			fb_stride_tmp = 14'd4096;
-			x_center  = 12'd320;
-			y_center  = 12'd241;
-			auto_arx  = 13'h1000 | 13'd640;
-			auto_ary  = 13'h1000 | 13'd480;
-			
-			h_total_reg  = 12'd849;  // 850 clocks (at 26.78 MHz -> 31.5 kHz)
-			v_total_reg  = 12'd524;  // 525 lines  (at 31.5 kHz -> 60.02 Hz)
-			hs_start_reg = 12'd680;
-			hs_end_reg   = 12'd740;
-			vs_start_reg = 12'd490;
-			vs_end_reg   = 12'd492;
-			
 			// X_scale = 41/64 (0.6406) -> max 499.5 * 41/64 = +/- 320 (Active X: 640)
 			x_scaled = ((avg_x_ext << 5) + (avg_x_ext << 3) + avg_x_ext) >>> 9;
 			// Y_scale = 27/64 (0.4219) -> 560 * 27/64 = 236 (Active Y: ~472)
 			y_scaled = ((avg_y_ext << 4) + (avg_y_ext << 3) + (avg_y_ext << 1) + avg_y_ext) >>> 9;
-				
 		end else begin
-			// ---------------------------------------------------------
-			// Default / 720p / 1440p+
-			// ---------------------------------------------------------
-			fb_width_tmp  = 12'd980;
-			fb_height_tmp = 12'd720;
-			fb_stride_tmp = 14'd4096;
-			x_center  = 12'd490;
-			y_center  = 12'd350;
-			
-			if (HDMI_HEIGHT >= 12'd1440) begin
-				auto_arx = 13'h1000 | 13'd1960;
-				auto_ary = 13'h1000 | 13'd1440;
-			end else begin
-				auto_arx = 13'h1000 | 13'd980;
-				auto_ary = 13'h1000 | 13'd720;
-			end
-			
-			h_total_reg  = 12'd1199; // 1200 clocks -> maintains EXACTLY 60.003 Hz
-			v_total_reg  = 12'd743;  // 744 lines (24 lines of VBLANK)
-			hs_start_reg = 12'd1020;
-			hs_end_reg   = 12'd1080;
-			vs_start_reg = 12'd725;
-			vs_end_reg   = 12'd730;
-			
 			// X_scale = 7/8 (0.875) -> (X*8 - X*1) / 8
 			x_scaled = ((avg_x_ext << 3) - avg_x_ext) >>> 6;
-			// Y_scale = 5/8 (0.625) -> (Y*4 + Y*1) / 8
-			y_scaled = ((avg_y_ext << 2) + avg_y_ext) >>> 6;
+			// Y_scale = 19/32 (0.59375) -> (Y*16 + Y*4 - Y) / 32
+			y_scaled = ((avg_y_ext << 4) + (avg_y_ext << 2) - avg_y_ext) >>> 8;
 		end
 	end
 
-	reg [1:0] video_stable_sync = 2'b00;
-
-	reg [11:0] fb_width_stage1 = 0;
-	reg [11:0] fb_height_stage1 = 0;
-	reg [13:0] fb_stride_stage1 = 0;
-
-	reg [11:0] fb_width_stable = 0;
-	reg [11:0] fb_height_stable = 0;
-	reg [13:0] fb_stride_stable = 0;
-
-	always @(posedge clk_vid) begin
-		// Synchronize the stability flag into clk_vid domain
-		video_stable_sync <= {video_stable_sync[0], video_mode_stable};
-
-		// Stage 1: Pipeline the combinatorial values
-		fb_width_stage1  <= fb_width_tmp;
-		fb_height_stage1 <= fb_height_tmp;
-		fb_stride_stage1 <= fb_stride_tmp;
-
-		// Stage 2: Gate to stable output
-		if (!video_stable_sync[1]) begin
-			fb_width_stable  <= 12'd0;
-			fb_height_stable <= 12'd0;
-			fb_stride_stable <= 14'd0;
-		end else begin
-			fb_width_stable  <= fb_width_stage1;
-			fb_height_stable <= fb_height_stage1;
-			fb_stride_stable <= fb_stride_stage1;
-		end
-	end
-
-	// Drive the outputs to the MiSTer framework
-	assign FB_WIDTH  = fb_width_stable;
-	assign FB_HEIGHT = fb_height_stable;
-	assign FB_STRIDE = fb_stride_stable;
-	
-	assign VIDEO_ARX = (ar == 0) ? auto_arx :                 // Optimized (auto-detect with integer scaling)
-	                   (ar == 1) ? 13'd0 :                    // Stretched
-	                               (13'h1000 | {1'b0, fb_width_tmp});   // Pixel Perfect (1:1 exact native render resolution)
-
-	assign VIDEO_ARY = (ar == 0) ? auto_ary :                 // Optimized (auto-detect with integer scaling)
-	                   (ar == 1) ? 13'd0 :                    // Stretched
-	                               (13'h1000 | {1'b0, fb_height_tmp});  // Pixel Perfect (1:1 exact native render resolution)
+	assign VIDEO_ARX = (ar == 2'd0) ? auto_arx :
+	                   (ar == 2'd1) ? 13'd0 :
+	                                  (13'h1000 | {1'b0, fb_width});
+	assign VIDEO_ARY = (ar == 2'd0) ? auto_ary :
+	                   (ar == 2'd1) ? 13'd0 :
+	                                  (13'h1000 | {1'b0, fb_height});
 
 	// Center and Invert Y
 	wire signed [11:0] new_x = x_center + x_scaled;
 	wire signed [11:0] new_y = y_center - 12'sd1 - y_scaled;
-	
+
 	// Convert coordinates to positive 11-bit vectors for the drawing engine
 	wire [10:0] final_x = new_x[10:0];
 	wire [10:0] final_y = new_y[10:0];
 
-	wire beam_in_bounds = (new_x[11:0] < ((is_1080p) ? 12'd1470 : fb_width_tmp)) && (new_y[11:0] < fb_height_tmp);
+	wire beam_in_bounds = (new_x[11:0] < ((is_1080p) ? 12'd1470 : fb_width)) && (new_y[11:0] < fb_height);
 
 	// The VJFCWN (Face Window) macro draws the shield hit/flash effect.
 	// It draws massive lines out to X=+/-960 and Y=+/-1024.
-	wire x_match = ($signed(avg_x) >= 14'sd7678 && $signed(avg_x) <= 14'sd7682) || 
+	wire x_match = ($signed(avg_x) >= 14'sd7678 && $signed(avg_x) <= 14'sd7682) ||
 	               ($signed(avg_x) >= -14'sd7682 && $signed(avg_x) <= -14'sd7678);
 
 	wire y_match = ($signed(avg_y) >= -14'sd8191 && $signed(avg_y) <= -14'sd8190);
 
 	wire flash_trigger = x_match || y_match;
 
-	wire is_flash = flash_trigger && avg_rgb == 3'd7 && (avg_z ==8'd223) && !avg_is_dot && !avg_halted;
+	wire is_flash = flash_trigger && avg_rgb == 3'd7 && (avg_z_raw == 8'd223) && !avg_is_dot && !avg_halted;
+	wire hit_flash_active = HIT_FLASH_ENABLE && is_flash;
 
-	// CRT Dot Scale translation (Auto=0, Pixel=1, Double=2, Elipse=3)
-	wire [2:0] actual_star_pattern;
-	assign actual_star_pattern = (osd_star_pattern == 3'd0) ? 
-	                             ((HDMI_HEIGHT >= 12'd700) ? 3'd2 : 3'd0) : 
-	                             (osd_star_pattern - 3'd1);
+	// Dot Scale translation. OSD: 0=Auto, 1=Pixel, 2=2x, 3=2.5x.
+	// Rasterizer: 0=Pixel, 1=2x, 2=2.5x.
+	wire [2:0] actual_dot_mode;
+	wire [2:0] auto_dot_mode = (fb_height >= 12'd1000) ? 3'd2 :
+	                           (fb_height >= 12'd700)  ? 3'd1 :
+	                                                       3'd0;
+	assign actual_dot_mode = (effective_dot_mode == 3'd0) ? auto_dot_mode :
+	                         (effective_dot_mode == 3'd1) ? 3'd0 :
+	                         (effective_dot_mode == 3'd2) ? 3'd1 :
+	                         (effective_dot_mode == 3'd3) ? 3'd2 :
+	                                                         3'd0;
 
 	// Resolution-Independent Flash Accumulator (12 MHz)
 	reg [7:0] flash_param = 0;
 	reg [3:0] flash_sub = 0;
 	reg [16:0] flash_tick_cnt = 0;
 	wire flash_tick = (flash_tick_cnt == 17'd99999);
-	
+
 	always @(posedge clk_12) begin
-		
+
 		if (rst_12) begin
 			flash_param <= 0;
 			flash_sub <= 0;
@@ -1212,7 +1277,7 @@ module starwars (
 				else flash_param <= 0;
 			end
 			// 2. Accumulate during AVG drawing (runs at 12 MHz)
-			else if (!osd_disable_flash && is_flash) begin
+			else if (hit_flash_active) begin
 				flash_sub <= flash_sub + 1'b1;
 				if (flash_sub == 4'd12 && flash_param < 21) begin
 					flash_param <= flash_param + 1'b1;
@@ -1232,24 +1297,86 @@ module starwars (
 		end
 	end
 
+	// Video timing generator
+	// Video timing reset
+	wire rst_vid = reset | fb_reset_vid;
+
+	// Fast safe blanking zone right after VBLANK begins (gives counters safe room to reset)
+	wire [10:0] pre_vblank_line = fb_height[10:0] + 11'd2;
+
+	reg [2:0] clk_div_cnt = 0;
+	reg ce_pix = 0;
+
+	reg [10:0] h_cnt = 0;
+	reg [10:0] v_cnt = 0;
+
+	always @(posedge clk_vid) begin
+		if (rst_vid)                   ce_pix <= 1'b0;
+		else if (is_1080p)             ce_pix <= 1'b1;                // /1 (125.0 MHz)
+		else if (osd_120hz_vid)        ce_pix <= 1'b1;
+		else if (is_240p)              ce_pix <= (clk_div_cnt[2:0] == 0); // /8 (15.625 MHz)
+		else if (is_480p)              ce_pix <= (clk_div_cnt[1:0] == 0); // /4 (31.25 MHz)
+		else                           ce_pix <= clk_div_cnt[0];          // /2 (62.5 MHz)
+	end
+
+
+	wire h_end = (h_cnt >= h_total_reg[10:0]);
+	wire v_end = (v_cnt >= v_total_reg[10:0]);
+
+	always @(posedge clk_vid) begin
+		if (rst_vid) begin
+			clk_div_cnt <= 3'd0;
+			h_cnt       <= h_total_reg[10:0];
+			v_cnt       <= pre_vblank_line;
+		end else begin
+			clk_div_cnt <= clk_div_cnt + 1'b1;
+			if (ce_pix) begin
+				if (h_end) begin
+					h_cnt <= 0;
+					if (v_end) v_cnt <= 0;
+					else v_cnt <= v_cnt + 1'd1;
+				end else begin
+					h_cnt <= h_cnt + 1'd1;
+				end
+			end
+		end
+	end
+
+	wire raw_hsync  = ~(h_cnt >= hs_start_reg[10:0] && h_cnt < hs_end_reg[10:0]);
+	wire raw_vsync  = ~(v_cnt >= vs_start_reg[10:0] && v_cnt < vs_end_reg[10:0]);
+	wire raw_hblank = (h_cnt >= fb_width[10:0]);
+	wire raw_vblank = (v_cnt >= fb_height[10:0]);
+
 	// Vector to Raster Conversion
 	wire fifo_full_led;
-	vector_fb_ddram rasterizer (
-		.reset(reset),
+	wire arbiter_reset_busy;
+	vfb_top rasterizer (
+		.reset(rst_vid),
+		.video_timing_reset(rst_vid),
 		.clk_sys(clk_vid),
 		.clk_12(clk_12),
+
+		.osd_bloom_width(effective_bloom_width),
+		.osd_bloom_curve(effective_bloom_curve),
+		.osd_halo_filter(effective_halo_filter),
+		.osd_phosphor_mode(effective_phosphor_mode),
+		.osd_halo_spread(effective_halo_spread),
+		.osd_color_space(effective_color_space),
+		.osd_color_channels(effective_color_channels),
+		.osd_slot_mask(effective_slot_mask),
+		.osd_full_bypass(effective_full_bypass),
+		.arbiter_reset_busy(arbiter_reset_busy),
 
 		.X_VECTOR(final_x),
 		.Y_VECTOR(final_y),
 		.Z_VECTOR(final_z),
 		.RGB(avg_rgb),
 		.IS_DOT(avg_is_dot),
-		.BEAM_ON(|avg_z && beam_in_bounds && !is_flash),
-		
-		.START_FRAME(avg_go),
+		.BEAM_ON(raw_beam_on && beam_in_bounds && !hit_flash_active),
+
 		.FRAME_DONE(avg_halted),
-		.OSD_FLICKER(osd_raster_flicker),
-		.STAR_PATTERN(actual_star_pattern),
+		.BUFFER_MODE(osd_buffer_mode),
+		.DOT_MODE(actual_dot_mode),
 		.FIFO_FULL_LED(fifo_full_led),
 		.FLASH_PARAM(flash_param_stable),
 		.OSD_120HZ(osd_120hz_mode),
@@ -1265,64 +1392,42 @@ module starwars (
 		.DDRAM_BE(DDRAM_BE),
 		.DDRAM_WE(DDRAM_WE),
 
-		.FB_EN(FB_EN),
-		.FB_FORMAT(FB_FORMAT),
-		.FB_WIDTH(fb_width_stable),
-		.FB_HEIGHT(fb_height_stable),
-		.FB_BASE(FB_BASE),
-		.FB_STRIDE(fb_stride_stable),
-		.FB_VBL(FB_VBL),
-		.FB_LL(FB_LL),
-		.FB_FORCE_BLANK(FB_FORCE_BLANK),
-		.FB_PAL_CLK(FB_PAL_CLK),
-		.FB_PAL_ADDR(FB_PAL_ADDR),
-		.FB_PAL_DOUT(FB_PAL_DOUT),
-		.FB_PAL_DIN(FB_PAL_DIN),
-		.FB_PAL_WR(FB_PAL_WR)
+		.SDRAM_DQ_IN(SDRAM_DQ_IN),
+		.SDRAM_DQ_OUT(SDRAM_DQ_OUT),
+		.SDRAM_DQ_OE(SDRAM_DQ_OE),
+		.SDRAM_CKE(SDRAM_CKE),
+		.SDRAM_nCS(SDRAM_nCS),
+		.SDRAM_nRAS(SDRAM_nRAS),
+		.SDRAM_nCAS(SDRAM_nCAS),
+		.SDRAM_nWE(SDRAM_nWE),
+		.SDRAM_DQM(SDRAM_DQM),
+		.SDRAM_A(SDRAM_A),
+		.SDRAM_BA(SDRAM_BA),
+
+		.RENDER_WIDTH(fb_width),
+		.RENDER_HEIGHT(fb_height),
+
+		.VGA_R(VGA_R),
+		.VGA_G(VGA_G),
+		.VGA_B(VGA_B),
+		.VGA_HS(hsync),
+		.VGA_VS(vsync),
+		.VGA_HBLANK(hblank),
+		.VGA_VBLANK(vblank),
+
+		.h_cnt(h_cnt),
+		.v_cnt(v_cnt),
+		.ce_pix(ce_pix),
+		.hsync(raw_hsync),
+		.vsync(raw_vsync),
+		.hblank(raw_hblank),
+		.vblank(raw_vblank)
 	);
 
-	assign video_r = 3'b000;
-	assign video_g = 3'b000;
-	assign video_b = 3'b000;
 
-	// Video timing generator
-	reg [2:0] clk_div_cnt = 0;
-	always @(posedge clk_vid) begin
-		clk_div_cnt <= clk_div_cnt + 1'b1;
-	end
-
-	reg ce_pix;
-	always @(*) begin
-		if (osd_120hz_mode || is_1080p) ce_pix = 1'b1;                    // /1 (107.14 MHz)
-		else if (is_240p)               ce_pix = (clk_div_cnt[2:0] == 0); // /8 (13.39 MHz)
-		else if (is_480p)               ce_pix = (clk_div_cnt[1:0] == 0); // /4 (26.78 MHz)
-		else                            ce_pix = clk_div_cnt[0];          // /2 (53.57 MHz) - Default for 720p / 1440p+
-	end
 	assign CE_PIXEL = ce_pix;
 
-	reg [10:0] h_cnt = 0;
-	reg [10:0] v_cnt = 0;
-
-	wire h_end = (h_cnt == h_total_reg[10:0]);
-	wire v_end = (v_cnt == v_total_reg[10:0]);
-
-	always @(posedge clk_vid) begin
-		if (ce_pix) begin
-			if (h_end) begin
-				h_cnt <= 0;
-				if (v_end) v_cnt <= 0;
-				else v_cnt <= v_cnt + 1'd1;
-			end else begin
-				h_cnt <= h_cnt + 1'd1;
-			end
-		end
-	end
-
-	assign hsync  = ~(h_cnt >= hs_start_reg[10:0] && h_cnt < hs_end_reg[10:0]);
-	assign vsync  = ~(v_cnt >= vs_start_reg[10:0] && v_cnt < vs_end_reg[10:0]);
-	assign hblank = (h_cnt >= fb_width_stable[10:0]);
-	assign vblank = (v_cnt >= fb_height_stable[10:0]);
-	
+	// --- Operation LEDs ---
 	assign led = {fifo_full_led, 1'b0, 1'b0};
 
 endmodule

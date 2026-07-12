@@ -19,7 +19,7 @@ entity avg is
         	cpu_addr : in  STD_LOGIC_VECTOR (13 downto 0);
         	cpu_cs_l : in  STD_LOGIC;
         	cpu_rw_l : in  STD_LOGIC;
-			vgrst : in STD_LOGIC; 
+			vgrst : in STD_LOGIC;
 			vggo : in STD_LOGIC;
 			halted : out STD_LOGIC;
         	xout : out  STD_LOGIC_VECTOR (13 downto 0);
@@ -29,14 +29,14 @@ entity avg is
         	is_dot : out STD_LOGIC;
 			clken: in STD_LOGIC;
         	clk : in  STD_LOGIC;
-			  
+
 			-- External memory interface for AVG
 			avg_addr_out : out STD_LOGIC_VECTOR(15 downto 0);
 			avg_data_in  : in  STD_LOGIC_VECTOR(7 downto 0);
-			 
+
 			dn_addr   : in std_logic_vector(7 downto 0);
 			dn_data   : in std_logic_vector(7 downto 0);
-			dn_wr     : in std_logic			  
+			dn_wr     : in std_logic
 		);
 end avg;
 
@@ -127,7 +127,7 @@ architecture Behavioral of avg is
 	-- Normalization at 12 MHz (schematic p.24 Fig.0: Normalization Flag circuit).
 	-- STROBE 0 + OP0=0 sets NORM (LS74 5K). NORM asserts SA (freezes PROM)
 	-- and enables /ENORM (via S10) to clock LS194 shift registers at 12 MHz.
-	-- Terminates when DVY12!=DVY11 or DVX12!=DVX11 (S86 XOR → S260 NOR).
+	-- Terminates when DVY12!=DVY11 or DVX12!=DVX11 (S86 XOR -> S260 NOR).
 	signal norm_active: STD_LOGIC;                     -- normalization in progress
 	signal norm_count: STD_LOGIC_VECTOR(3 downto 0);   -- shift counter (diagnostic)
 	-- 15-bit Vector Timer (schematic p.25 Fig.0: four cascaded LS161 counters
@@ -148,7 +148,7 @@ begin
 	-- External memory interface
 	avg_addr_out <= "00" & memory_addr;
 	memory_din <= avg_data_in;
-	
+
 	z_mult <= intens_mod * intensity;
 
 	-- PROM download: write during ROM loading
@@ -159,7 +159,7 @@ begin
 			end if;
 		end if;
 	end process;
-	
+
 	vectordrawer: entity work.vector_drawer port map (
 		clk => clk,
 		clk_ena => clken,
@@ -175,7 +175,7 @@ begin
 		xout => xout,
 		yout => yout
 	);
-	
+
 	-- =================================================================
 	-- Main PROM-driven state machine process
 	-- Each clken tick = 1 tick at 1.5 MHz = 8 master clocks (662 ns)
@@ -262,20 +262,20 @@ begin
 					-- Hardware: AM7 = NOR(HALT*, GO).  AM7=1 (running) only
 					-- when not halted AND not drawing.  During draws, AM7=0
 					-- forces the PROM to the idle page ($00-$7F) where all
-					-- states have ST3=0 — no latches/strobes fire.
+					-- states have ST3=0 - no latches/strobes fire.
 					running := not halt_flag and not go_flag;
 					prom_addr := running & op & prom_state;
-					
+
 					-- Read next state from PROM
 					next_state := avg_prom(conv_integer(prom_addr));
-					
+
 					-- Execute action for the NEW state
 					if next_state(3)='1' then
 						-- ST3=1: a latch or strobe fires
 						case next_state(2 downto 0) is
 
 							when "001" =>
-								-- LATCH 1 (state $9): Read hi byte → opcode + DVY high.
+								-- LATCH 1 (state $9): Read hi byte -> opcode + DVY high.
 								-- /LATCH1 clears three chip groups (schematic p.23):
 								--   5F,5H (Fig.2): DVY0-7 async cleared to 0
 								--   5A,5B,5C (Fig.2): DVX0-11 async cleared to 0
@@ -349,8 +349,8 @@ begin
 										rgb <= instruction(10 downto 8);
 									else
 										-- Scale (0111_SSS LLLLLLLL)
-										-- SSS = bin_scale → LS175 latch (6L) → LS191 counter (6M)
-										-- LLLLLLLL = linear_scale → LF13201 DAC (schematic p.26)
+										-- SSS = bin_scale -> LS175 latch (6L) -> LS191 counter (6M)
+										-- LLLLLLLL = linear_scale -> LF13201 DAC (schematic p.26)
 										linear_scale_reg <= instruction(7 downto 0);
 										bin_scale <= instruction(10 downto 8);
 									end if;
@@ -402,7 +402,7 @@ begin
 						end case;
 					end if;
 					-- ST3=0 (states $0-$7): idle tick, no action
-					
+
 					-- Advance PROM state
 					prom_state <= next_state;
 
@@ -440,7 +440,7 @@ begin
 					operand(0) <= '0';
 					-- Note: Bit 14 is inherently set by the +5V pull-up PR111
 					-- loading '1's into the timer during normalization shifts.
-					-- Bit 7: LS02 gate 2A routes OP1 — set to '1' for SVEC,
+					-- Bit 7: LS02 gate 2A routes OP1 - set to '1' for SVEC,
 					-- otherwise normal shift-in from bit 8.
 					hw_timer(14) <= '1';
 					hw_timer(13 downto 8) <= hw_timer(14 downto 9);
@@ -486,19 +486,19 @@ begin
 
 		end if;
 	end process;
-	
+
 	-- Memory address tracking: always follows PC
 	process (clk) begin
 		if clk'event and clk='1' then
 			memory_addr <= pc;
-			cpu_data_in <= x"00"; 
+			cpu_data_in <= x"00";
 		end if;
 	end process;
 
 	-- VGHALT output: active when halted
 	halted <= halt_flag;
-	
+
 	zout <= z_mult(10 downto 3);
-	
+
 	rgbout <= rgb;
 end Behavioral;
