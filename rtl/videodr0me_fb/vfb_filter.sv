@@ -632,13 +632,13 @@ module vfb_filter (
 	end
 
 	// Bloom Blur Passes
-	logic [10:0] hc_p1, hc_p2, hc_p3;
-	logic hb_p1, hb_p2, hb_p3;
+	logic [10:0] hc_p1, hc_p2;
+	logic hb_p1, hb_p2;
 	logic [23:0] b_p1, b_p2, b_p3;
 
 	vfb_blur bloom_pass1 (.clk_sys(clk_sys), .ce_pix(ce_pix), .reset(reset), .active_x_in(ax_pipe[3]), .hblank_in(hb_pipe[3]), .enable(en_p1), .rgb_in(bloom_src), .active_x_out(hc_p1), .hblank_out(hb_p1), .rgb_out(b_p1));
 	vfb_blur bloom_pass2 (.clk_sys(clk_sys), .ce_pix(ce_pix), .reset(reset), .active_x_in(hc_p1), .hblank_in(hb_p1), .enable(en_p2), .rgb_in(b_p1), .active_x_out(hc_p2), .hblank_out(hb_p2), .rgb_out(b_p2));
-	vfb_blur bloom_pass3 (.clk_sys(clk_sys), .ce_pix(ce_pix), .reset(reset), .active_x_in(hc_p2), .hblank_in(hb_p2), .enable(en_p3), .rgb_in(b_p2), .active_x_out(hc_p3), .hblank_out(hb_p3), .rgb_out(b_p3));
+	vfb_blur bloom_pass3 (.clk_sys(clk_sys), .ce_pix(ce_pix), .reset(reset), .active_x_in(hc_p2), .hblank_in(hb_p2), .enable(en_p3), .rgb_in(b_p2), .active_x_out(), .hblank_out(), .rgb_out(b_p3));
 
 	// Bloom compensation scale
 	logic [7:0] bloom_comp_r, bloom_comp_g, bloom_comp_b;

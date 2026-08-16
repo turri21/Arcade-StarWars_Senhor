@@ -179,6 +179,10 @@ assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 wire [15:0] sdram_dq_out;
 wire        sdram_dq_oe;
 wire  [1:0] sdram_dqm;
+wire        mode_supports_120hz;
+wire        mode_is_15khz;
+wire        video_mode_toggle;
+wire        video_freeze;
 
 // Commands and write data change on the 125 MHz video/core clock rising edge.
 // Driving SDRAM with the inverted clock gives them half a cycle to settle
@@ -187,7 +191,6 @@ assign SDRAM_DQ   = sdram_dq_oe ? sdram_dq_out : 16'hzzzz;
 assign SDRAM_DQML = sdram_dqm[0];
 assign SDRAM_DQMH = sdram_dqm[1];
 
-assign VGA_F1    = 0;
 assign VGA_SCALER= 0;
 assign VGA_DISABLE = 0;
 assign VGA_SL = 0;
@@ -200,7 +203,7 @@ assign LED_POWER = 0; // Let system control
 assign LED_DISK  = 0; // Let system control
 assign BUTTONS   = 0;
 assign AUDIO_MIX = 0;
-assign HDMI_FREEZE = 0;
+assign HDMI_FREEZE = video_freeze;
 
 assign CLK_VIDEO = clk_125; // Direct PLL output (125 MHz)
 assign VGA_HS = hs;
@@ -208,60 +211,6 @@ assign VGA_VS = vs;
 assign VGA_DE = ~(hblank | vblank);
 
 wire [1:0] ar = status[15:14];
-
-// Stable transition to and from 120Hz Mode.
-// ASCAL still does not like transitions to and from 120Hz and occasionally hangs.
-// Double-flop and s1==s2 check for safe multi-bit domain crossing
-reg [11:0] h_s1 = 0, h_s2 = 0;
-reg [11:0] hdmi_height_candidate = 0;
-reg [11:0] stable_height_reg = 0;
-reg [24:0] hdmi_height_timer = 0;
-
-always @(posedge clk_50) begin
-	h_s1 <= HDMI_HEIGHT;
-	h_s2 <= h_s1;
-
-	if (h_s1 == h_s2) begin
-		if (h_s2 > 12'd200 && h_s2 == hdmi_height_candidate) begin
-			if (hdmi_height_timer < 25'd25_000_000) begin
-				hdmi_height_timer <= hdmi_height_timer + 1'd1;
-			end else begin
-				stable_height_reg <= hdmi_height_candidate;
-			end
-		end else begin
-			hdmi_height_candidate <= h_s2;
-			hdmi_height_timer <= 0;
-			stable_height_reg <= 0; // Go to 0 while stabilizing
-		end
-	end
-end
-
-reg hz_s1 = 0, hz_s2 = 0;
-reg osd_120hz_latched = 0;
-reg [24:0] hz_timer = 0;
-
-always @(posedge clk_50) begin
-	hz_s1 <= status[25];
-	hz_s2 <= hz_s1;
-
-	if (hz_s1 == hz_s2) begin
-		if (hz_s2 != osd_120hz_latched) begin
-			if (hz_timer < 25'd25_000_000) begin
-				hz_timer <= hz_timer + 1'd1;
-			end else begin
-				osd_120hz_latched <= hz_s2;
-				hz_timer <= 0;
-			end
-		end else begin
-			hz_timer <= 0;
-		end
-	end
-end
-
-// Force STABLE_HEIGHT to 0 during 120Hz toggle debouncing, forcing a soft reset in starwars.sv
-wire is_120hz_changing = (hz_s2 != osd_120hz_latched) || (hz_timer > 0);
-wire [11:0] STABLE_HEIGHT = is_120hz_changing ? 12'd0 : stable_height_reg;
-wire STABLE_120HZ = osd_120hz_latched & (STABLE_HEIGHT == 12'd720);
 
 // Profile Management has per resolution presets and offers two custom option sets.
 //
@@ -275,13 +224,9 @@ wire STABLE_120HZ = osd_120hz_latched & (STABLE_HEIGHT == 12'd720);
 localparam CONF_STR = {
 	"Star Wars;;",
 	"-;",
-	"P3,Video Options;",
+	"P3,Video Profiles & Effects;",
 	"P3-;",
-	"P3O[15:14],Aspect ratio,Optimized,Stretched,Pixel Perfect;",
-	"D3P3O[25],120Hz (720p only),Off,On;",
-	"P3O[40:39],Buffer Mode,EOF + VBL,VBL,EOF;",
-	"P3-;",
-	"P3O[68:66],Profile,Off,A Touch of CRT,80s Cruise Control,80s Overdrive,Neon Fever Dream,Pink Flamingo ESB,Custom 1,Custom 2;",
+	"P3O[68:66],Profile,A Touch of CRT,80s Cruise Control,80s Overdrive,Neon Fever Dream,Pink Flamingo ESB,Custom 1,Custom 2,Off;",
 	"h7P3O[30:28],Dot Scale,Auto,Pixel,2x,2.5x;",
 	"h7P3O[38:37],Tone Mapping,Linear 2,Bright,Off,Linear 1;",
 	"h7P3O[56:55],Phosphor Decay,Off,LUT A,LUT B,LUT C;",
@@ -341,6 +286,20 @@ localparam CONF_STR = {
 	"hEP3O[110],> Color Space,Off,Amp709;",
 	"hEP3O[113:111],> Color Channels,RGB,RBG,GRB,GBR,BRG,BGR,B/W,Negative;",
 	"hEP3O[114],> Slot Mask,Off,On;",
+	"P6,Video Timing & Geometry;",
+	"P6-;",
+	"P6O[118:116],Orientation,Normal,Rotate 90 CW,Rotate 180,Rotate 90 CCW,Mirror Horizontal,Mirror Vertical,Mirror H + 90 CW,Mirror H + 90 CCW;",
+	"P6O[119],Zoom,Normal,Wide;",
+	"P6-;",
+	"P6O[40:39],Buffer Mode,EOF + VBL,VBL,EOF;",
+	"D3P6O[25],120Hz (720p only),Off,On;",
+	"h0P6O[115],Direct Video Scan Rate,15 kHz,31 kHz;",
+	"hCP6O[120],15 kHz Format,480i,240p;",
+	"h4P6O[124:122],CRT Vertical Position,0,+4,+8,+12,-4,-8,-10;",
+	"hFP6O[124:122],CRT Vertical Position,0,+2,+4,+6,-2,-4,-6;",
+	"P6-;",
+	"P6-,Best left at default:;",
+	"P6O[15:14],Aspect Ratio,Optimized,Stretched,Pixel Perfect;",
 	 "-;",
 	"P2,Cabinet Audio Hardware;",
 	"P2-;",
@@ -348,8 +307,8 @@ localparam CONF_STR = {
 	"P2O6,Reticon Del/Rev,On,Off;",
 	"-;",
 	"P4,Input Controls;",
-	"P4o01,Input,Analog,Digital,Auto;",
-	"D4P4o23,Digital Sensitivity,Medium,Low,High,Max;",
+	"P4O[34:32],Input,Analog Stick,Trackball / Mouse,Digital Centering,Digital Relative,Auto;",
+	"P4O[127:125],Sensitivity,1.0x,0.75x,0.5x,0.25x,0.125x,1.25x,1.5x,2.0x;",
 	"P4-;",
 	"P4o4,Y-Axis,Normal,Inverted;",
 	"-;",
@@ -400,7 +359,7 @@ localparam CONF_STR = {
 	"R0,Reset;",
 	"J1,Fire L,Shield L,Aux Coin,Coin L,Coin R,Fire R,Shield R;",
 	"jn,A,B,Start,R,L,Y,Z;",
-	"V,v2.00.",`BUILD_DATE
+	"V,v2.10.",`BUILD_DATE
 };
 
 ////////////////////   CLOCKS   ///////////////////
@@ -425,8 +384,9 @@ pll pll
 
 wire [127:0] status;
 wire  [1:0] buttons;
-wire        forced_scandoubler;
 wire        direct_video;
+wire        mode_is_480line;
+wire        mode_is_240p;
 
 wire [21:0] gamma_bus;
 
@@ -443,12 +403,13 @@ wire  [7:0] ioctl_index;
 wire [15:0] joy_0, joy_1;
 wire [15:0] joy = joy_0 | joy_1;
 wire [15:0] joy_l_analog_0;
+wire [24:0] ps2_mouse;
 wire        rom_download = ioctl_download && !ioctl_index;
 wire        nvram_download = ioctl_download && (ioctl_index == 8'd4);
 wire [24:0] dl_addr = ioctl_addr;
 
 // Profile Management
-wire [2:0] crt_profile = status[68:66];
+wire [2:0] crt_profile = status[68:66] + 3'd1;
 wire       crt_profile_off        = (crt_profile == 3'd0);
 wire       crt_profile_touch      = (crt_profile == 3'd1);
 wire       crt_profile_typical    = (crt_profile == 3'd2);
@@ -506,10 +467,10 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.buttons(buttons),
 	.status(status),
 	.status_menumask({
-		1'b0,                         // F: unused
+		mode_is_240p,                 // F: show 240p vertical position
 		crt_profile_custom2,          // E: show Custom 2 editable bank
 		crt_profile_custom1,          // D: show Custom 1 editable bank
-		1'b0,                         // C: unused
+		mode_is_15khz,                // C: show 15 kHz format selection
 		crt_profile_flashing,         // B: show Neon/Pink flashing warning
 		crt_profile_overdriven,       // A: show 80s Overdrive info rows
 		crt_profile_typical,          // 9: show 80s Cruise Control info rows
@@ -517,16 +478,15 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 		crt_profile_off,              // 7: show Off editable rows
 		crt_custom_halo_off,          // 6: disable Custom halo spread if halo is Off
 		crt_custom_bloom_width_off,   // 5: disable Custom bloom curve if bloom is Off
-		is_analog_input,              // 4: disable digital sensitivity in analog mode
-		STABLE_HEIGHT != 12'd720,     // 3: disable 120Hz outside 720p
+		mode_is_480line,              // 4: show 480p/480i vertical position
+		!mode_supports_120hz,          // 3: disable 120Hz outside 720p
 		mod_esb,                      // 2: hide Star Wars DIP rows
 		mod_starwars,                 // 1: hide ESB DIP rows
 		direct_video                  // 0: framework direct-video mask
 	}),
-	.forced_scandoubler(forced_scandoubler),
 	.gamma_bus(gamma_bus),
 	.direct_video(direct_video),
-	.new_vmode(1'b0),
+	.new_vmode(video_mode_toggle),
 
 	.ioctl_download(ioctl_download),
 	.ioctl_upload(ioctl_upload),
@@ -541,7 +501,8 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.joystick_0(joy_0),
 	.joystick_1(joy_1),
-	.joystick_l_analog_0(joy_l_analog_0)
+	.joystick_l_analog_0(joy_l_analog_0),
+	.ps2_mouse(ps2_mouse)
 );
 
 wire m_fire_l   = joy[4];          // Left fire (Button A)
@@ -575,98 +536,25 @@ wire hs, vs;
 
 wire reset = (RESET | status[0] |  buttons[1] | rom_download | nvram_download);
 
-// Digital Joystick and Y-Axis Inversion Handling
-wire [1:0] input_mode = status[33:32];
-wire is_analog_input = (input_mode == 2'd0);
-wire digital_yoke_forced = (input_mode == 2'd1);
-wire [3:0] digital_yoke_step =
-	status[35:34] == 2'b01 ? 4'd1 :
-	status[35:34] == 2'b10 ? 4'd4 :
-	status[35:34] == 2'b11 ? 4'd8 :
-	                          4'd2;
-wire [7:0] digital_yoke_move_step = {4'd0, digital_yoke_step};
-// Separated for future enhancements (e.g., independent auto-centering speed)
-wire [7:0] digital_yoke_center_step = digital_yoke_move_step;
+wire [7:0] yoke_x;
+wire [7:0] yoke_y;
 
-function automatic signed [8:0] step_digital_yoke_axis;
-	input signed [8:0] current;
-	input signed [8:0] target;
-	input [7:0] step;
-	reg signed [9:0] diff;
-	reg signed [9:0] step_s;
-	begin
-		diff = $signed({target[8], target}) - $signed({current[8], current});
-		step_s = $signed({2'd0, step});
-
-		if (diff > step_s)
-			step_digital_yoke_axis = current + $signed({1'b0, step});
-		else if (diff < -step_s)
-			step_digital_yoke_axis = current - $signed({1'b0, step});
-		else
-			step_digital_yoke_axis = target;
-	end
-endfunction
-
-wire input_y_reverse = status[36];
-wire m_digital_up = input_y_reverse ? m_down : m_up;
-wire m_digital_down = input_y_reverse ? m_up : m_down;
-wire digital_yoke_x_active = m_left ^ m_right;
-wire digital_yoke_y_active = m_digital_up ^ m_digital_down;
-wire digital_yoke_direction = m_left | m_right | m_up | m_down;
-wire signed [8:0] analog_yoke_x = $signed({joy_l_analog_0[7], joy_l_analog_0[7:0]});
-wire signed [8:0] analog_yoke_y = $signed({joy_l_analog_0[15], joy_l_analog_0[15:8]});
-wire analog_yoke_active =
-	(analog_yoke_x > 9'sd24) || (analog_yoke_x < -9'sd24) ||
-	(analog_yoke_y > 9'sd24) || (analog_yoke_y < -9'sd24);
-wire signed [8:0] digital_yoke_target_x = (m_left ^ m_right) ? (m_right ? 9'sd127 : -9'sd128) : 9'sd0;
-wire signed [8:0] digital_yoke_target_y = digital_yoke_y_active ? (m_digital_down ? 9'sd127 : -9'sd128) : 9'sd0;
-reg signed [8:0] digital_yoke_x;
-reg signed [8:0] digital_yoke_y;
-reg [15:0] digital_yoke_tick_div;
-wire digital_yoke_tick = (digital_yoke_tick_div == 16'd0);
-
-reg digital_auto_latched;
-wire digital_yoke_mode = (digital_yoke_forced || digital_auto_latched) && !is_analog_input;
-
-always @(posedge clk_12) begin
-	if (reset) begin
-		digital_auto_latched <= 1'b0;
-		digital_yoke_x <= 9'sd0;
-		digital_yoke_y <= 9'sd0;
-		digital_yoke_tick_div <= 16'd0;
-	end else begin
-		if (digital_yoke_forced || is_analog_input)
-			digital_auto_latched <= 1'b0;
-		else if (digital_yoke_direction)
-			digital_auto_latched <= 1'b1;
-		else if (analog_yoke_active)
-			digital_auto_latched <= 1'b0;
-
-		digital_yoke_tick_div <= digital_yoke_tick_div + 16'd1;
-
-		if (!digital_yoke_mode) begin
-			digital_yoke_x <= 9'sd0;
-			digital_yoke_y <= 9'sd0;
-			digital_yoke_tick_div <= 16'd0;
-		end else if (digital_yoke_tick) begin
-			digital_yoke_x <= step_digital_yoke_axis(
-				digital_yoke_x,
-				digital_yoke_target_x,
-				digital_yoke_x_active ? digital_yoke_move_step : digital_yoke_center_step
-			);
-			digital_yoke_y <= step_digital_yoke_axis(
-				digital_yoke_y,
-				digital_yoke_target_y,
-				digital_yoke_y_active ? digital_yoke_move_step : digital_yoke_center_step
-			);
-		end
-	end
-end
-
-wire [7:0] raw_analog_y = joy_l_analog_0[15:8];
-wire [7:0] final_analog_y = input_y_reverse ? ~raw_analog_y : raw_analog_y;
-wire [7:0] yoke_x = digital_yoke_mode ? digital_yoke_x[7:0] : joy_l_analog_0[7:0];
-wire [7:0] yoke_y = digital_yoke_mode ? digital_yoke_y[7:0] : final_analog_y;
+starwars_yoke_input yoke_input
+(
+	.clk_sys(clk_12),
+	.reset(reset),
+	.analog(joy_l_analog_0),
+	.mouse(ps2_mouse),
+	.left(m_left),
+	.right(m_right),
+	.up(m_up),
+	.down(m_down),
+	.input_mode(status[34:32]),
+	.sensitivity(status[127:125]),
+	.invert_y(status[36]),
+	.yoke_x(yoke_x),
+	.yoke_y(yoke_y)
+);
 
 // AUDIO OUT
 wire [15:0] audio_l, audio_r;
@@ -705,6 +593,7 @@ starwars #(
 	.osd_buffer_mode(status[40:39]),
 	.osd_audio_filter(~status[5]),   // Inverted: OSD 0=On, 1=Off
 	.osd_audio_delay(~status[6]),    // Inverted: OSD 0=On, 1=Off
+	.osd_120hz_mode(status[25]),
 	.osd_crt_profile(crt_profile),
 	.osd_off_dot_mode(status[30:28]),
 	.osd_off_tonemapping(osd_off_tonemapping),
@@ -715,11 +604,23 @@ starwars #(
 	.ar(ar),
 	.VIDEO_ARX(VIDEO_ARX),
 	.VIDEO_ARY(VIDEO_ARY),
-
-	.STABLE_HEIGHT(STABLE_HEIGHT),
-	.osd_120hz_mode_in(STABLE_120HZ),
+	.VGA_F1(VGA_F1),
+	.mode_supports_120hz(mode_supports_120hz),
+	.mode_is_15khz(mode_is_15khz),
+	.mode_is_480line(mode_is_480line),
+	.mode_is_240p(mode_is_240p),
+	.video_mode_toggle(video_mode_toggle),
+	.video_freeze(video_freeze),
 
 	.mod_esb(mod_esb),
+	.upload_reset(!pll_locked),
+	.direct_video(direct_video),
+	.direct_video_31khz(status[115]),
+	.crt_15khz_480i(!status[120]),
+	.crt_vertical_position(status[124:122]),
+	.HDMI_HEIGHT(HDMI_HEIGHT),
+	.orientation(status[118:116]),
+	.zoom_wide(status[119]),
 
 	.CE_PIXEL(CE_PIXEL),
 

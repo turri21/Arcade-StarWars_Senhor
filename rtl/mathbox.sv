@@ -174,7 +174,7 @@ module mathbox (
 
 	// =========================================================================
 	// PRNG (23-bit LFSR, runs continuously at ~3MHz)
-	// Polynomial: x^23 + x^5 + 1 (prime), feedback inverted
+	// Feedback polynomial: x^23 + x^5 + 1; inverted feedback.
 	// Only bits [15:8] readable by CPU at $4703
 	// =========================================================================
 	reg [22:0] prng;
@@ -219,14 +219,12 @@ module mathbox (
 	// =========================================================================
 	// Serial Multiplier State (74LS384 model)
 	// ACC += (A-B) * C * 4  (the <<2 models 74LS384 pipeline alignment)
-	// A-B is computed at 16-bit width (wraps, matching hardware)
-	// Then sign-extended for the serial multiply
+	// A-B is retained at 17 bits before the signed multiply.
 	// =========================================================================
 	reg signed [32:0] mac_shift;   // (A-B) shifted left each cycle
 	reg        [15:0] mac_c;       // C register, shifts right each cycle
 	reg signed [32:0] mac_prod;    // Accumulated product
 
-	// A-B difference (17-bit signed to prevent overflow)
 	wire signed [15:0] next_a = exec_strobe[7] ? mb_rdata : reg_a;
 	wire signed [15:0] next_b = exec_strobe[6] ? mb_rdata : reg_b;
 	wire signed [16:0] ab_diff = {next_a[15], next_a} - {next_b[15], next_b};
@@ -418,8 +416,7 @@ module mathbox (
 							mac_count <= mac_count - 6'd1;
 						end else begin
 							// Final cycle (mac_count == 1): add product to ACC
-							// The <<2 likely models pipeline alignment in the 74LS384
-							// (My interpretation - matches MAME and all test results)
+							// Apply the RTL accumulator's two-bit fixed-point alignment.
 							acc       <= acc + (mac_prod[31:0] <<< 2);
 							mac_count <= 0;
 							state     <= 3'd4; // Continue to MPA advance

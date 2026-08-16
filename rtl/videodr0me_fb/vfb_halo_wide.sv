@@ -2,9 +2,9 @@
 // Broad, low-resolution halo generator.
 // written 2026 by Videodr0me
 //
-// The module builds a coarse 16x16 halo image, blurs it with one of four
-// symmetric eight-tap kernels, then returns it to full pixel rate. Mode 0 is
-// the compact kernel; Wide 1/2/3 use progressively flatter kernels.
+// Reduces the source into 16x16-pixel cells, applies a separable eight-tap
+// kernel, then reconstructs the full-rate halo. Original is nearly flat;
+// Wide 1 through Wide 3 progressively flatten the peaked kernel.
 // ============================================================================
 
 module vfb_halo_wide #(
@@ -23,8 +23,6 @@ module vfb_halo_wide #(
 	input  logic [7:0]  VGA_R_IN,
 	input  logic [7:0]  VGA_G_IN,
 	input  logic [7:0]  VGA_B_IN,
-	input  logic        VGA_HS_IN,
-	input  logic        VGA_VS_IN,
 	input  logic        VGA_HBLANK_IN,
 	input  logic        VGA_VBLANK_IN,
 
@@ -665,7 +663,7 @@ module vfb_halo_wide #(
 				logic [7:0] tail_limit_y;
 
 				tail_limit_y =
-					reduced_height + VERTICAL_CENTER_DELAY_ROWS;
+					reduced_height + VERTICAL_CENTER_DELAY_ROWS + 8'd1;
 				tail_service_first_live_y_q <=
 					tail_service_first_live_y_next;
 				source_epoch <= next_source_epoch;
@@ -1251,6 +1249,7 @@ module vfb_halo_wide #(
 	logic [7:0] flush_y;
 	logic [COARSE_W-1:0] horizontal_step_x;
 	logic horizontal_step_valid;
+	logic horizontal_row_start;
 	logic horizontal_step_epoch;
 	logic [7:0] horizontal_step_y;
 	logic [23:0] horizontal_step_rgb;
@@ -1275,6 +1274,23 @@ module vfb_halo_wide #(
 	logic [23:0] horizontal_mask_tap_5;
 	logic [23:0] horizontal_mask_tap_6;
 	logic [23:0] horizontal_mask_tap_7;
+	logic horizontal_candidate_valid;
+	logic horizontal_candidate_row_complete;
+	logic [COARSE_W-1:0] horizontal_candidate_x;
+	logic [1:0] horizontal_candidate_bank;
+	logic horizontal_candidate_epoch;
+	logic [7:0] horizontal_candidate_y;
+	logic horizontal_candidate_safe;
+	logic horizontal_current_tap_valid;
+	logic [6:0] horizontal_candidate_history_valid;
+	logic [23:0] horizontal_candidate_tap_0;
+	logic [23:0] horizontal_candidate_tap_1;
+	logic [23:0] horizontal_candidate_tap_2;
+	logic [23:0] horizontal_candidate_tap_3;
+	logic [23:0] horizontal_candidate_tap_4;
+	logic [23:0] horizontal_candidate_tap_5;
+	logic [23:0] horizontal_candidate_tap_6;
+	logic [23:0] horizontal_candidate_tap_7;
 	logic horizontal_part_valid;
 	logic horizontal_part_row_complete;
 	logic [COARSE_W-1:0] horizontal_part_x;
@@ -1312,14 +1328,63 @@ module vfb_halo_wide #(
 			? flush_epoch : vertical_blur_epoch;
 		horizontal_step_y = flush_active ? flush_y : vertical_blur_y;
 		horizontal_step_rgb = flush_active ? 24'd0 : vertical_blur_rgb;
+
+		horizontal_row_start =
+			vertical_blur_valid &&
+			!flush_active &&
+			(vertical_blur_x == '0);
+		horizontal_current_tap_valid =
+			vertical_blur_valid &&
+			!flush_active &&
+			(vertical_blur_x < coarse_width);
+		horizontal_candidate_history_valid = horizontal_row_start
+			? 7'd0 : h_valid_history;
+		horizontal_candidate_tap_0 = mask_rgb(
+			horizontal_step_rgb, horizontal_current_tap_valid);
+		horizontal_candidate_tap_1 = mask_rgb(
+			h_history[0], horizontal_candidate_history_valid[0]);
+		horizontal_candidate_tap_2 = mask_rgb(
+			h_history[1], horizontal_candidate_history_valid[1]);
+		horizontal_candidate_tap_3 = mask_rgb(
+			h_history[2], horizontal_candidate_history_valid[2]);
+		horizontal_candidate_tap_4 = mask_rgb(
+			h_history[3], horizontal_candidate_history_valid[3]);
+		horizontal_candidate_tap_5 = mask_rgb(
+			h_history[4], horizontal_candidate_history_valid[4]);
+		horizontal_candidate_tap_6 = mask_rgb(
+			h_history[5], horizontal_candidate_history_valid[5]);
+		horizontal_candidate_tap_7 = mask_rgb(
+			h_history[6], horizontal_candidate_history_valid[6]);
+
+		if (horizontal_step_x < 4)
+			horizontal_candidate_x = coarse_width + horizontal_step_x;
+		else
+			horizontal_candidate_x = horizontal_step_x - 3'd4;
+		horizontal_candidate_bank = horizontal_row_start
+			? write_bank[horizontal_step_epoch] : horizontal_row_bank;
+		horizontal_candidate_epoch = horizontal_row_start
+			? horizontal_step_epoch : horizontal_row_epoch;
+		horizontal_candidate_y = horizontal_row_start
+			? horizontal_step_y : horizontal_row_y;
+		horizontal_candidate_safe = horizontal_row_start
+			? vertical_blur_safe : horizontal_row_safe;
+		horizontal_candidate_valid =
+			horizontal_step_valid &&
+			((horizontal_step_x < 4) ||
+			 (horizontal_candidate_x < coarse_width)) &&
+			(horizontal_candidate_y >= RECON_FIRST_ROW);
+		horizontal_candidate_row_complete =
+			(horizontal_step_x >= 4) &&
+			(horizontal_candidate_x + 1'b1 >= coarse_width) &&
+			horizontal_candidate_safe;
 	end
 
-	(* ramstyle = "MLAB, no_rw_check" *) logic [23:0] halo_row_0a [0:COARSE_WIDTH-1];
-	(* ramstyle = "MLAB, no_rw_check" *) logic [23:0] halo_row_1a [0:COARSE_WIDTH-1];
-	(* ramstyle = "MLAB, no_rw_check" *) logic [23:0] halo_row_2a [0:COARSE_WIDTH-1];
-	(* ramstyle = "MLAB, no_rw_check" *) logic [23:0] halo_row_0b [0:COARSE_WIDTH-1];
-	(* ramstyle = "MLAB, no_rw_check" *) logic [23:0] halo_row_1b [0:COARSE_WIDTH-1];
-	(* ramstyle = "MLAB, no_rw_check" *) logic [23:0] halo_row_2b [0:COARSE_WIDTH-1];
+	(* ramstyle = "MLAB, no_rw_check" *) logic [23:0] halo_row_0a [0:COARSE_WIDTH+3];
+	(* ramstyle = "MLAB, no_rw_check" *) logic [23:0] halo_row_1a [0:COARSE_WIDTH+3];
+	(* ramstyle = "MLAB, no_rw_check" *) logic [23:0] halo_row_2a [0:COARSE_WIDTH+3];
+	(* ramstyle = "MLAB, no_rw_check" *) logic [23:0] halo_row_0b [0:COARSE_WIDTH+3];
+	(* ramstyle = "MLAB, no_rw_check" *) logic [23:0] halo_row_1b [0:COARSE_WIDTH+3];
+	(* ramstyle = "MLAB, no_rw_check" *) logic [23:0] halo_row_2b [0:COARSE_WIDTH+3];
 	logic horizontal_write_valid;
 	logic horizontal_write_row_complete;
 	logic [COARSE_W-1:0] horizontal_write_x;
@@ -1456,7 +1521,22 @@ module vfb_halo_wide #(
 				completed_rows[next_source_epoch] <= 8'd0;
 			end
 
-			horizontal_mask_valid <= 1'b0;
+			horizontal_mask_valid <= horizontal_candidate_valid;
+			horizontal_mask_row_complete <=
+				horizontal_candidate_row_complete;
+			horizontal_mask_x <= horizontal_candidate_x;
+			horizontal_mask_bank <= horizontal_candidate_bank;
+			horizontal_mask_epoch <= horizontal_candidate_epoch;
+			horizontal_mask_y <= horizontal_candidate_y;
+			horizontal_mask_spread_mode <= halo_spread_mode;
+			horizontal_mask_tap_0 <= horizontal_candidate_tap_0;
+			horizontal_mask_tap_1 <= horizontal_candidate_tap_1;
+			horizontal_mask_tap_2 <= horizontal_candidate_tap_2;
+			horizontal_mask_tap_3 <= horizontal_candidate_tap_3;
+			horizontal_mask_tap_4 <= horizontal_candidate_tap_4;
+			horizontal_mask_tap_5 <= horizontal_candidate_tap_5;
+			horizontal_mask_tap_6 <= horizontal_candidate_tap_6;
+			horizontal_mask_tap_7 <= horizontal_candidate_tap_7;
 			horizontal_part_valid <= horizontal_mask_valid;
 			horizontal_total_valid <= horizontal_part_valid;
 			horizontal_write_valid <= horizontal_total_valid;
@@ -1594,72 +1674,12 @@ module vfb_halo_wide #(
 			end
 
 			if (horizontal_step_valid) begin
-				logic do_horizontal_write;
-				logic [COARSE_W-1:0] output_x;
-				logic [1:0] step_bank;
-				logic tap_valid_0;
-				logic tap_valid_1;
-				logic tap_valid_2;
-				logic tap_valid_3;
-				logic tap_valid_4;
-				logic tap_valid_5;
-				logic tap_valid_6;
-				logic tap_valid_7;
-				logic current_tap_valid;
-				logic [23:0] horizontal_tap_0;
-				logic [23:0] horizontal_tap_1;
-				logic [23:0] horizontal_tap_2;
-				logic [23:0] horizontal_tap_3;
-				logic [23:0] horizontal_tap_4;
-				logic [23:0] horizontal_tap_5;
-				logic [23:0] horizontal_tap_6;
-				logic [23:0] horizontal_tap_7;
-
-				current_tap_valid = (horizontal_step_x < coarse_width);
-				tap_valid_0 = current_tap_valid;
-				if (horizontal_step_x == 0) begin
-					tap_valid_1 = 1'b0;
-					tap_valid_2 = 1'b0;
-					tap_valid_3 = 1'b0;
-					tap_valid_4 = 1'b0;
-					tap_valid_5 = 1'b0;
-					tap_valid_6 = 1'b0;
-					tap_valid_7 = 1'b0;
-				end else begin
-					tap_valid_1 = h_valid_history[0];
-					tap_valid_2 = h_valid_history[1];
-					tap_valid_3 = h_valid_history[2];
-					tap_valid_4 = h_valid_history[3];
-					tap_valid_5 = h_valid_history[4];
-					tap_valid_6 = h_valid_history[5];
-					tap_valid_7 = h_valid_history[6];
-				end
-				horizontal_tap_0 = mask_rgb(
-					horizontal_step_rgb, tap_valid_0);
-				horizontal_tap_1 = mask_rgb(
-					h_history[0], tap_valid_1);
-				horizontal_tap_2 = mask_rgb(
-					h_history[1], tap_valid_2);
-				horizontal_tap_3 = mask_rgb(
-					h_history[2], tap_valid_3);
-				horizontal_tap_4 = mask_rgb(
-					h_history[3], tap_valid_4);
-				horizontal_tap_5 = mask_rgb(
-					h_history[4], tap_valid_5);
-				horizontal_tap_6 = mask_rgb(
-					h_history[5], tap_valid_6);
-				horizontal_tap_7 = mask_rgb(
-					h_history[6], tap_valid_7);
-
-				if (horizontal_step_x == 0) begin
+				if (horizontal_row_start) begin
 					horizontal_row_safe <= vertical_blur_safe;
 					horizontal_row_bank <=
 						write_bank[horizontal_step_epoch];
 					horizontal_row_epoch <= horizontal_step_epoch;
 					horizontal_row_y <= horizontal_step_y;
-					step_bank = write_bank[horizontal_step_epoch];
-				end else begin
-					step_bank = horizontal_row_bank;
 				end
 
 				h_history[6] <= h_history[5];
@@ -1669,8 +1689,9 @@ module vfb_halo_wide #(
 				h_history[2] <= h_history[1];
 				h_history[1] <= h_history[0];
 				h_history[0] <= horizontal_step_rgb;
-				if (horizontal_step_x == 0) begin
-					h_valid_history <= {6'd0, current_tap_valid};
+				if (horizontal_row_start) begin
+					h_valid_history <=
+						{6'd0, horizontal_current_tap_valid};
 				end else begin
 					h_valid_history[6] <= h_valid_history[5];
 					h_valid_history[5] <= h_valid_history[4];
@@ -1678,34 +1699,8 @@ module vfb_halo_wide #(
 					h_valid_history[3] <= h_valid_history[2];
 					h_valid_history[2] <= h_valid_history[1];
 					h_valid_history[1] <= h_valid_history[0];
-					h_valid_history[0] <= current_tap_valid;
-				end
-
-				do_horizontal_write = 1'b0;
-				output_x = '0;
-				if (horizontal_step_x >= 4) begin
-					output_x = horizontal_step_x - 3'd4;
-					do_horizontal_write = (output_x < coarse_width);
-				end
-				if (do_horizontal_write &&
-				    horizontal_row_y >= RECON_FIRST_ROW) begin
-					horizontal_mask_valid <= 1'b1;
-					horizontal_mask_row_complete <=
-						(output_x + 1'b1 >= coarse_width) &&
-						horizontal_row_safe;
-					horizontal_mask_x <= output_x;
-					horizontal_mask_bank <= step_bank;
-					horizontal_mask_epoch <= horizontal_row_epoch;
-					horizontal_mask_y <= horizontal_row_y;
-					horizontal_mask_spread_mode <= halo_spread_mode;
-					horizontal_mask_tap_0 <= horizontal_tap_0;
-					horizontal_mask_tap_1 <= horizontal_tap_1;
-					horizontal_mask_tap_2 <= horizontal_tap_2;
-					horizontal_mask_tap_3 <= horizontal_tap_3;
-					horizontal_mask_tap_4 <= horizontal_tap_4;
-					horizontal_mask_tap_5 <= horizontal_tap_5;
-					horizontal_mask_tap_6 <= horizontal_tap_6;
-					horizontal_mask_tap_7 <= horizontal_tap_7;
+					h_valid_history[0] <=
+						horizontal_current_tap_valid;
 				end
 			end
 		end
@@ -2130,7 +2125,8 @@ module vfb_halo_wide #(
 					segment_read_addr <= '0;
 					segment_read_in_range <= 1'b0;
 				end else if (reconstruction_x_q[11:4] < 4) begin
-					segment_read_addr <= '0;
+					segment_read_addr <= coarse_width +
+						COARSE_W'(reconstruction_x_q[11:4]);
 					segment_read_in_range <= 1'b1;
 				end else begin
 					last_address = coarse_width - 1'b1;

@@ -3,8 +3,8 @@
 // ============================================================================
 // videodr0me_fb: Buffer Controller
 // written 2026 by Videodr0me
-// Manages quad-buffer lifecycle: DISPLAY <-> DRAWING -> DRAWN -> DISPLAY
-// with background DIRTY -> CLEARING -> CLEAN pipeline.
+// Manages four buffers through CLEAN -> DRAWING -> DRAWN/DISPLAY -> DIRTY ->
+// CLEARING -> CLEAN.
 // ============================================================================
 
 module vfb_buffer_controller (

@@ -1,5 +1,5 @@
 // ============================================================================
-// videodr0me_fb: DDR Arbiter Module - Pure Bus Multiplexer
+// videodr0me_fb: Fixed-priority DDRAM transaction arbiter
 // written 2026 by Videodr0me
 // Arbitrates between requestors using fixed priority. Each requestor provides
 // a uniform interface (addr, burstcnt, din/be for writes). The arbiter never
@@ -48,8 +48,6 @@ module vfb_ddr_arbiter (
 	input  logic [63:0] flush_din,          // Current beat data (from requestor)
 	input  logic [7:0]  flush_be,           // Current beat byte enables (from requestor)
 	output wire         flush_advance,      // Combinatorial: beat accepted, present next
-	output logic [23:0] debug_flashparam,   // Color-coded activity status
-	output wire         arbiter_idle,       // True if arbiter is in IDLE state
 	output wire         reset_busy          // True while arbiter is draining a mid-reset burst
 );
 
@@ -86,7 +84,6 @@ module vfb_ddr_arbiter (
 	assign DDRAM_BE  = (arb_state == ARB_FLUSH && !rst_active) ? flush_be : 8'h00;
 
 	assign flush_advance = (arb_state == ARB_FLUSH) && !DDRAM_BUSY && !rst_active;
-	assign arbiter_idle = (arb_state == ARB_IDLE);
 	assign reset_busy = rst_active;
 
 	localparam int RESET_DRAIN_WDOG_BITS = 16;
@@ -229,26 +226,6 @@ module vfb_ddr_arbiter (
 			end
 		endcase
 		end
-	end
-
-	always_comb begin
-		case (arb_state)
-			ARB_IDLE: begin
-				debug_flashparam = 24'h000000;
-			end
-			ARB_READOUT: begin
-				debug_flashparam = DDRAM_DOUT_READY ? 24'h0000FF : 24'h00007F;
-			end
-			ARB_FILL: begin
-				debug_flashparam = DDRAM_DOUT_READY ? 24'h00FF00 : 24'h007F00;
-			end
-			ARB_FLUSH: begin
-				debug_flashparam = !DDRAM_BUSY ? 24'hFF0000 : 24'h7F0000;
-			end
-			default: begin
-				debug_flashparam = 24'h000000;
-			end
-		endcase
 	end
 
 endmodule

@@ -15,9 +15,8 @@
 	<parent>starwars</parent>
 	<mameversion>0228</mameversion>
 	<rbf>StarWars</rbf>
-	<about></about>
+	<about author="Videodr0me" webpage="https://github.com/Videodr0me/Arcade-StarWars_MiSTer">Atari Star Wars with a cycle-accurate AVG, mathbox, flight-yoke controls, cabinet audio, and a high-resolution vector framebuffer.</about>
 
-	<resolution>31kHz</resolution>
 	<rotation>horizontal</rotation>
 	<flip></flip>
 

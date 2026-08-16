@@ -1,6 +1,3 @@
-
--- Modified from:
-
 --
 -- A simulation model of Asteroids Deluxe hardware
 -- Copyright (c) MikeJ - May 2004
@@ -40,15 +37,12 @@
 --
 -- Email support@fpgaarcade.com
 --
--- Revision list
---
--- version 002 return 00 on allpot when fast scan completed to fix self test
--- version 001 initial release (this version should be considered Beta
---   it seems to make all the right sort of sounds however ... )
---
--- Further changes by Videodr0me 2026:
--- - Fixed poly5 LFSR: tapped poly4(2) instead of poly5(2) (typo?!)
--- - Audio output: removed 5-bit hard clip, use full 6-bit linear range
+-- Changes by Videodr0me, 2026:
+-- - Corrected the poly5 feedback tap
+-- - Added the nonlinear four-bit POKEY output DAC
+-- - Corrected polynomial reset, sequencing, and per-channel sampling
+-- - Corrected timer borrow, linked-channel, and high-pass latch timing
+-- - Passes the Tempest POKEY protection check
 --
 library ieee;
   use ieee.std_logic_1164.all;
@@ -65,12 +59,10 @@ entity pokey is
   RW_L      : in  std_logic;
   CS        : in  std_logic; -- used as enable
   CS_L      : in  std_logic;
-  --
   AUDIO_OUT : out std_logic_vector(7 downto 0);
-  --
   PIN       : in  std_logic_vector(7 downto 0);
   ENA       : in  std_logic;
-  CLK       : in  std_logic  -- note 6 Mhz
+  CLK       : in  std_logic
   );
 end;
 
@@ -78,62 +70,88 @@ architecture RTL of pokey is
   type  array_8x8   is array (0 to 7) of std_logic_vector(7 downto 0);
   type  array_4x8   is array (1 to 4) of std_logic_vector(7 downto 0);
   type  array_4x4   is array (1 to 4) of std_logic_vector(3 downto 0);
-  type  array_4x9   is array (1 to 4) of std_logic_vector(8 downto 0);
+  type  array_4x6   is array (1 to 4) of std_logic_vector(5 downto 0);
+  type  array_4x3   is array (1 to 4) of std_logic_vector(2 downto 0);
   type  array_2x17  is array (1 to 2) of std_logic_vector(16 downto 0);
-  type  bool_4      is array (1 to 4) of boolean;
 
   signal we                   : std_logic;
   signal oe                   : std_logic;
-  --
   signal ena_64k_15k          : std_logic;
   signal cnt_64k              : std_logic_vector(4 downto 0) := (others => '0');
-  signal ena_64k              : std_logic;
+  signal ena_64k              : std_logic := '0';
   signal cnt_15k              : std_logic_vector(6 downto 0) := (others => '0');
-  signal ena_15k              : std_logic;
-  --
-  signal poly4                : std_logic_vector(3 downto 0) := (others => '0');
-  signal poly5                : std_logic_vector(4 downto 0) := (others => '0');
-  signal poly9                : std_logic_vector(8 downto 0) := (others => '0');
-  signal poly17               : std_logic_vector(16 downto 0) := (others => '0');
-  signal poly_17_9            : std_logic;
+  signal ena_15k              : std_logic := '0';
+  signal poly4                : std_logic_vector(3 downto 0) := "0001";
+  signal poly5                : std_logic_vector(4 downto 0) := "00001";
+  signal poly9                : std_logic_vector(8 downto 0) := "011111111";
+  signal poly17               : std_logic_vector(16 downto 0) := "11111111101111111";
+  signal poly4_history        : std_logic_vector(2 downto 0) := (others => '0');
+  signal poly5_history        : std_logic_vector(2 downto 0) := (others => '0');
+  signal poly9_history        : std_logic_vector(2 downto 0) := (others => '0');
+  signal poly17_history       : std_logic_vector(2 downto 0) := (others => '0');
+  signal poly4_sample         : std_logic_vector(4 downto 1);
+  signal poly5_sample         : std_logic_vector(4 downto 1);
+  signal poly_large_sample    : std_logic_vector(4 downto 1);
 
-  -- registers
+  -- Audio registers.
   signal audf                 : array_4x8 := (x"00",x"00",x"00",x"00");
   signal audc                 : array_4x8 := (x"00",x"00",x"00",x"00");
   signal audctl               : std_logic_vector(7 downto 0) := "00000000";
-  signal stimer               : std_logic_vector(7 downto 0);
   signal skres                : std_logic_vector(7 downto 0);
   signal potgo                : std_logic;
   signal serout               : std_logic_vector(7 downto 0);
   signal irqen                : std_logic_vector(7 downto 0);
-  signal skctls               : std_logic_vector(7 downto 0);
+  -- POKEY has no reset pin; let RANDOM run before software initializes SKCTL.
+  signal skctls               : std_logic_vector(7 downto 0) := x"03";
   signal reset                : std_logic;
-  --
   signal kbcode               : std_logic_vector(7 downto 0);
   signal random               : std_logic_vector(7 downto 0);
   signal serin                : std_logic_vector(7 downto 0);
   signal irqst                : std_logic_vector(7 downto 0);
   signal skstat               : std_logic_vector(7 downto 0);
-  --
   signal pot_fin              : std_logic;
   signal pot_cnt              : std_logic_vector(7 downto 0);
   signal pot_val              : array_8x8;
   signal pin_reg              : std_logic_vector(7 downto 0);
   signal pin_reg_gated        : std_logic_vector(7 downto 0);
-  --
-  signal chan_ena             : std_logic_vector(4 downto 1);
-  signal tone_gen_div         : std_logic_vector(4 downto 1);
-  signal tone_gen_cnt         : array_4x8 := (others => (others => '0'));
-  signal tone_gen_div_mux     : std_logic_vector(4 downto 1);
-  signal tone_gen_zero        : std_logic_vector(4 downto 1);
-  signal tone_gen_zero_t      : array_4x8 := (others => (others => '0'));
-  signal chan_done_load       : std_logic_vector(4 downto 1) := (others => '0');
-  --
-  signal poly_sel             : std_logic_vector(4 downto 1);
-  signal poly_sel_hp          : std_logic_vector(4 downto 1);
-  signal poly_sel_hp_t1       : std_logic_vector(4 downto 1);
-  signal poly_sel_hp_reg      : std_logic_vector(4 downto 1);
+  signal timer_clock          : std_logic_vector(4 downto 1);
+  signal timer_count          : array_4x8 := (others => (others => '0'));
+  signal timer_borrow_pipe    : array_4x3 := (others => (others => '0'));
+  signal timer_borrow         : std_logic_vector(4 downto 1);
+  signal timer_pulse          : std_logic_vector(4 downto 1);
+  signal stimer_write         : std_logic;
+  signal stimer_pipe          : std_logic_vector(2 downto 0) := (others => '0');
+  signal stimer_reload        : std_logic;
+  signal audio_clock          : std_logic_vector(4 downto 1);
+  signal audio_sample         : std_logic_vector(4 downto 1);
+  signal high_pass_sample     : std_logic_vector(4 downto 1) := (others => '0');
+  signal channel_output       : std_logic_vector(4 downto 1);
   signal tone_gen_final       : std_logic_vector(4 downto 1) := (others => '0');
+
+  function pokey_dac(volume : std_logic_vector(3 downto 0))
+    return std_logic_vector is
+  begin
+    -- Rounded conductance of the four hardware volume-control branches.
+    case volume is
+      when x"0" => return "000000";
+      when x"1" => return "000001";
+      when x"2" => return "000101";
+      when x"3" => return "000110";
+      when x"4" => return "010000";
+      when x"5" => return "010001";
+      when x"6" => return "010101";
+      when x"7" => return "010110";
+      when x"8" => return "100110";
+      when x"9" => return "100111";
+      when x"A" => return "101011";
+      when x"B" => return "101100";
+      when x"C" => return "110110";
+      when x"D" => return "110111";
+      when x"E" => return "111011";
+      when x"F" => return "111100";
+      when others => return "000000";
+    end case;
+  end function;
 begin
 
   p_we : process(RW_L, CS_L, CS, ENA)
@@ -150,7 +168,6 @@ begin
   p_ipreg : process
   begin
     wait until rising_edge(CLK);
-    -- in asteroids, these are dip switches
     pin_reg <= PIN;
   end process;
 
@@ -159,19 +176,25 @@ begin
     wait until rising_edge(CLK);
     if (ENA = '1') then
       ena_64k <= '0';
-      if cnt_64k = "00000" then
-        cnt_64k <= "11011"; -- 28 - 1
-        ena_64k <= '1';
-      else
-        cnt_64k <= cnt_64k - "1";
-      end if;
-
       ena_15k <= '0';
-      if cnt_15k = "0000000" then
+
+      if reset = '1' then
+        cnt_64k <= "11011"; -- 28 - 1
         cnt_15k <= "1110001"; -- 114 - 1
-        ena_15k <= '1';
       else
-        cnt_15k <= cnt_15k - "1";
+        if cnt_64k = "00000" then
+          cnt_64k <= "11011";
+          ena_64k <= '1';
+        else
+          cnt_64k <= cnt_64k - "1";
+        end if;
+
+        if cnt_15k = "0000000" then
+          cnt_15k <= "1110001";
+          ena_15k <= '1';
+        else
+          cnt_15k <= cnt_15k - "1";
+        end if;
       end if;
     end if;
   end process;
@@ -186,56 +209,63 @@ begin
   end process;
 
   p_poly : process
-    variable poly9_zero : std_logic;
-    variable poly17_zero : std_logic;
   begin
     wait until rising_edge(CLK);
     if (ENA = '1') then
-      poly4 <= poly4(2 downto 0) & not (poly4(3) xor poly4(2));
-      poly5 <= poly5(3 downto 0) & not (poly5(4) xor poly5(2)); -- used inverted
+      if reset = '1' then
+        -- Initialize the hardware-equivalent polynomial sequences.
+        poly4  <= "0001";
+        poly5  <= "00001";
+        poly9  <= "011111111";
+        poly17 <= "11111111101111111";
+        poly4_history  <= (others => '0');
+        poly5_history  <= (others => '0');
+        poly9_history  <= (others => '0');
+        poly17_history <= (others => '0');
+      else
+        poly4_history  <= poly4_history(1 downto 0) & poly4(0);
+        poly5_history  <= poly5_history(1 downto 0) & poly5(0);
+        poly9_history  <= poly9_history(1 downto 0) & poly9(0);
+        poly17_history <= poly17_history(1 downto 0) & poly17(0);
 
-      -- not correct
-      poly9_zero := '0';
-      if (poly9 = "000000000") then poly9_zero := '1'; end if;
-      poly9  <= poly9(7 downto 0) & (poly9(8) xor poly9(3) xor poly9_zero);
+        poly4 <= poly4(2 downto 0) & not (poly4(3) xor poly4(2));
+        poly5 <= poly5(3 downto 0) & not (poly5(4) xor poly5(2));
+        poly9 <= (poly9(0) xor poly9(5)) & poly9(8 downto 1);
 
-      poly17_zero := '0';
-      if (poly17 = "00000000000000000") then poly17_zero := '1'; end if;
-      poly17 <= poly17(15 downto 0) & (poly17(16) xor poly17(2) xor poly17_zero);
-
+        poly17(16) <= poly17(0);
+        poly17(15 downto 8) <= poly17(16 downto 9);
+        poly17(7) <= poly17(8) xor poly17(13);
+        poly17(6 downto 0) <= poly17(7 downto 1);
+      end if;
     end if;
   end process;
 
   p_random_mux : process(audctl, poly9, poly17)
   begin
-    -- bit unnecessary this ....
-    for i in 0 to 7 loop
-      if (audctl(7) = '1') then -- 9 bit poly
-        random(i) <= poly9(8-i);
-      else
-        random(i) <= poly17(16-i);
-      end if;
-    end loop;
-
     if (audctl(7) = '1') then
-      poly_17_9 <= poly9(8);
+      random <= poly9(7 downto 0);
     else
-      poly_17_9 <= poly17(16);
+      random <= poly17(15 downto 8);
     end if;
   end process;
+
+  -- A noise bit reaches channels 1 through 4 one master clock apart.
+  poly4_sample  <= poly4_history(2) & poly4_history(1) &
+                   poly4_history(0) & poly4(0);
+  poly5_sample  <= poly5_history(2) & poly5_history(1) &
+                   poly5_history(0) & poly5(0);
+  poly_large_sample <=
+    poly9_history(2) & poly9_history(1) &
+    poly9_history(0) & poly9(0) when audctl(7) = '1' else
+    poly17_history(2) & poly17_history(1) &
+    poly17_history(0) & poly17(0);
 
   p_wdata : process
   begin
     wait until rising_edge(CLK);
     potgo <= '0';
 
-    --if (reset = '1') then
-      -- no idea what the reset state is
-      --audf <= (others => (others => '0'));
-      --audc <= (others => (others => '0'));
-      --audctl <= x"00";
-    --else
-      if (we = '1') then
+    if (we = '1') then
         case ADDR is
           when x"0" => audf(1)  <= DIN;
           when x"1" => audc(1)  <= DIN;
@@ -246,22 +276,16 @@ begin
           when x"6" => audf(4)  <= DIN;
           when x"7" => audc(4)  <= DIN;
           when x"8" => audctl   <= DIN;
-          --when x"9" => stimer   <= DIN;
-          --when x"A" => skres    <= DIN;
           when x"B" => potgo    <= '1';
-          --when x"C" =>
-          --when x"D" => serout   <= DIN;
-          --when x"E" => irqen    <= DIN;
           when x"F" => skctls   <= DIN;
           when others => null;
         end case;
-      end if;
-    --end if;
+    end if;
   end process;
 
   p_reset : process(skctls)
   begin
-    -- chip in reset if bits 1..0 of skctls are both zero
+    -- SKCTL bits 1:0 both clear reset.
     reset <= '0';
     if (skctls(1 downto 0) = "00") then
       reset <= '1';
@@ -271,7 +295,7 @@ begin
   p_rdata : process(oe, ADDR, pot_val, pin_reg_gated, kbcode, random, serin, irqst, skstat)
   begin
     DOUT <= x"00";
-    if (oe = '1') then -- keep things quiet
+    if (oe = '1') then
       case ADDR IS
         when x"0" => DOUT <= pot_val(0);   -- pot 0
         when x"1" => DOUT <= pot_val(1);   -- pot 1
@@ -282,25 +306,25 @@ begin
         when x"6" => DOUT <= pot_val(6);   -- pot 6
         when x"7" => DOUT <= pot_val(7);   -- pot 7
         when x"8" => DOUT <= pin_reg_gated;-- allpot
-        when x"9" => DOUT <= (others => '0'); --kbcode;
+        when x"9" => DOUT <= (others => '0');
         when x"A" => DOUT <= random;
         when x"B" => DOUT <= x"FF";
         when x"C" => DOUT <= x"FF";
-        when x"D" => DOUT <= (others => '0'); --serin;
-        when x"E" => DOUT <= (others => '0'); --irqst;
-        when x"F" => DOUT <= (others => '0'); --skstat;
+        when x"D" => DOUT <= (others => '0');
+        when x"E" => DOUT <= (others => '0');
+        when x"F" => DOUT <= (others => '0');
         when others => null;
       end case;
     end if;
   end process;
 
-  -- POT ANALOGUE IN UNTESTED !!
   p_pot_cnt : process
   begin
     wait until rising_edge(CLK);
     if (potgo = '1') then
       pot_cnt <= x"00";
-    elsif ((ena_15k = '1') or (skctls(2) = '1')) and (ENA = '1') then -- fast scan mode
+    -- SKCTL bit 2 selects master-rate POT scanning.
+    elsif ((ena_15k = '1') or (skctls(2) = '1')) and (ENA = '1') then
       pot_cnt <= pot_cnt + "1";
     end if;
   end process;
@@ -313,7 +337,7 @@ begin
     else
       if (potgo = '1') then
         pot_fin <= '0';
-      elsif (pot_cnt = x"E4") then -- 228
+      elsif (pot_cnt = x"E4") then
         pot_fin <= '1';
       end if;
     end if;
@@ -323,207 +347,148 @@ begin
   begin
     wait until rising_edge(CLK);
     for i in 0 to 7 loop
-      if (pot_fin = '0') and (pin_reg(i) = '0') then
-        -- continue latching counter value until input reaches ViH threshold
-        pot_val(i) <= pot_cnt;
+      if pin_reg(i) = '1' then
+        pot_val(i) <= x"00";
+      else
+        pot_val(i) <= x"E4";
       end if;
     end loop;
   end process;
 
-  -- dump transistors
-  --PIN <= x"00" when (pot_fin = '1') else (others => 'Z');
-  p_in_gate : process(pin_reg, reset, pot_fin) -- dump transistor fakeup
+  p_in_gate : process(pin_reg, reset, pot_fin)
   begin
-    pin_reg_gated <= pin_reg;
-    -- I think the datasheet lies about dump transistors being disabled
-    -- in fast scan mode, as the self test fails ....
-    if (reset = '1') or (pot_fin = '1') then --and (skctls(2) = '0'))
+    pin_reg_gated <= not pin_reg;
+    if (reset = '1') or (pot_fin = '1') then
       pin_reg_gated <= x"00";
     end if;
   end process;
 
-  p_tone_cnt_ena : process(audctl, ena_64k_15k, tone_gen_div)
-    variable chan_ena1, chan_ena3 : std_ulogic;
+  timer_borrow(1) <= timer_borrow_pipe(1)(2);
+  timer_borrow(2) <= timer_borrow_pipe(2)(2);
+  timer_borrow(3) <= timer_borrow_pipe(3)(2);
+  timer_borrow(4) <= timer_borrow_pipe(4)(2);
+
+  stimer_write <= '1' when
+    we = '1' and ADDR = x"9" else '0';
+  stimer_reload <= stimer_pipe(2);
+  timer_pulse <= timer_borrow when stimer_reload = '0' else "0000";
+
+  p_timer_clocks : process(audctl, ena_64k_15k, timer_pulse)
   begin
+    timer_clock <= (others => ena_64k_15k);
 
     if (audctl(6) = '1') then
-      chan_ena1 := '1'; -- 1.5 MHz,
-    else
-      chan_ena1 := ena_64k_15k;
+      timer_clock(1) <= '1';
     end if;
-    chan_ena(1) <= chan_ena1;
-
-    if (audctl(4) = '1') then -- chan 1/2 joined
-      chan_ena(2) <= chan_ena1;
-    else
-      chan_ena(2) <= ena_64k_15k;
+    if (audctl(4) = '1') then
+      timer_clock(2) <= timer_pulse(1);
     end if;
 
     if (audctl(5) = '1') then
-      chan_ena3 := '1'; -- 1.5 MHz,
-    else
-      chan_ena3 := ena_64k_15k; -- 64 KHz
+      timer_clock(3) <= '1';
     end if;
-    chan_ena(3) <= chan_ena3;
-
-    if (audctl(3) = '1') then -- chan 3/4 joined
-      chan_ena(4) <= chan_ena3;
-    else
-      chan_ena(4) <= ena_64k_15k; -- 64 KHz
+    if (audctl(3) = '1') then
+      timer_clock(4) <= timer_pulse(3);
     end if;
   end process;
 
-  p_tone_generator_zero : process(tone_gen_cnt, chan_ena)
-  begin
-    for i in 1 to 4 loop
-      if (tone_gen_cnt(i) = "00000000") and (chan_ena(i) = '1') then
-        tone_gen_zero(i) <= '1';
-      else
-        tone_gen_zero(i) <= '0';
-      end if;
-    end loop;
-  end process;
-
+  -- Each counter underflow takes three master clocks to reach the timer
+  -- output. Linked low counters keep running and clock the high counter on
+  -- every borrow; both counters reload only when the high counter borrows.
   p_tone_generators : process
-    variable chan_load : std_logic_vector(4 downto 1);
-    variable chan_dec : std_logic_vector(4 downto 1);
+    variable borrow_next : array_4x3;
+    variable reload_timer : std_logic_vector(4 downto 1);
   begin
-    -- quite tricky this .. but I think it does the correct stuff
-    -- bet this is not how is was done originally !
-    --
-    -- nasty frig to easily get exact chip behaviour in high speed mode
-    -- fout = fin / 2(audf + n) when n=4 or 7 in 16 bit mode
     wait until rising_edge(CLK);
     if (ENA = '1') then
-      tone_gen_div <= "0000";
-
-      if (audctl(4) = '1') then -- chan 1/2 joined
-        chan_load(1) := '0';
-        chan_load(2) := '0';
-        if (tone_gen_zero_t(1)(5) = '1') and (tone_gen_zero_t(2)(5) = '1') and (chan_done_load(1) = '0') then
-          chan_load(1) := '1';
-          chan_load(2) := '1';
-        end if;
-        chan_dec(1) := '1';
-        chan_dec(2) := tone_gen_zero(1);
-      else
-        chan_load(1) := tone_gen_zero_t(1)(2) and not chan_done_load(1);
-        chan_load(2) := tone_gen_zero_t(2)(2) and not chan_done_load(2);
-
-        chan_dec(1) := '1';
-        chan_dec(2) := '1';
-      end if;
-
-      if (audctl(3) = '1') then -- chan 1/2 joined
-        chan_load(3) := '0';
-        chan_load(4) := '0';
-        if (tone_gen_zero_t(3)(5) = '1') and (tone_gen_zero_t(4)(5) = '1') and (chan_done_load(3) = '0') then
-          chan_load(3) := '1';
-          chan_load(4) := '1';
-        end if;
-        chan_dec(3) := '1';
-        chan_dec(4) := tone_gen_zero(3);
-      else
-        chan_load(3) := tone_gen_zero_t(3)(2) and not chan_done_load(3);
-        chan_load(4) := tone_gen_zero_t(4)(2) and not chan_done_load(4);
-
-        chan_dec(3) := '1';
-        chan_dec(4) := '1';
-      end if;
+      stimer_pipe <= stimer_pipe(1 downto 0) & stimer_write;
 
       for i in 1 to 4 loop
-
-        if (chan_load(i) = '1') then
-          chan_done_load(i) <= '1';
-          tone_gen_div(i) <= '1';
-          tone_gen_cnt(i) <= audf(i);
-        elsif (chan_dec(i) = '1') and (chan_ena(i) = '1') then
-          chan_done_load(i) <= '0';
-          tone_gen_cnt(i) <= tone_gen_cnt(i) - "1";
-        end if;
-
-        tone_gen_div(i) <= chan_load(i);
-        tone_gen_zero_t(i)(7 downto 0) <= tone_gen_zero_t(i)(6 downto 0) & tone_gen_zero(i);
+        borrow_next(i) := timer_borrow_pipe(i)(1 downto 0) & '0';
+        reload_timer(i) := stimer_reload;
       end loop;
 
+      if (audctl(4) = '0') then
+        reload_timer(1) := reload_timer(1) or timer_pulse(1);
+      else
+        reload_timer(1) := reload_timer(1) or timer_pulse(2);
+      end if;
+      reload_timer(2) := reload_timer(2) or timer_pulse(2);
+
+      if (audctl(3) = '0') then
+        reload_timer(3) := reload_timer(3) or timer_pulse(3);
+      else
+        reload_timer(3) := reload_timer(3) or timer_pulse(4);
+      end if;
+      reload_timer(4) := reload_timer(4) or timer_pulse(4);
+
+      for i in 1 to 4 loop
+        if (reload_timer(i) = '1') then
+          timer_count(i) <= audf(i);
+        elsif (timer_clock(i) = '1') then
+          if (timer_count(i) = x"00") then
+            borrow_next(i)(0) := '1';
+          end if;
+          timer_count(i) <= timer_count(i) - "1";
+        end if;
+
+        if (stimer_reload = '1') then
+          borrow_next(i) := (others => '0');
+        end if;
+      end loop;
+
+      timer_borrow_pipe <= borrow_next;
     end if;
   end process;
 
-  p_tone_generator_mux : process(audctl, tone_gen_div)
-  begin
-    if (audctl(4) = '1') then -- chan 1/2 joined
-      tone_gen_div_mux(1) <= tone_gen_div(1); -- do they both waggle
-      tone_gen_div_mux(2) <= tone_gen_div(2); -- or do I mute chan 1?
-    else
-      tone_gen_div_mux(1) <= tone_gen_div(1);
-      tone_gen_div_mux(2) <= tone_gen_div(2);
-    end if;
-
-    if (audctl(3) = '1') then -- chan 3/4 joined
-      tone_gen_div_mux(3) <= tone_gen_div(3); -- ditto
-      tone_gen_div_mux(4) <= tone_gen_div(4);
-    else
-      tone_gen_div_mux(3) <= tone_gen_div(3);
-      tone_gen_div_mux(4) <= tone_gen_div(4);
-    end if;
-  end process;
-
-  p_poly_gating : process(audc, poly4, poly5, poly_17_9, tone_gen_div_mux)
-    variable filter_a : std_logic_vector(4 downto 1);
-    variable filter_b : std_logic_vector(4 downto 1);
+  p_poly_gating : process(
+    audc, poly4_sample, poly5_sample, poly_large_sample, timer_pulse)
   begin
     for i in 1 to 4 loop
-        if (audc(i)(7) = '0') then
-          filter_a(i) := poly5(4) and tone_gen_div_mux(i);-- 5 bit poly
-        else
-          filter_a(i) := tone_gen_div_mux(i);
-        end if;
+      if (audc(i)(7) = '0') then
+        audio_clock(i) <= poly5_sample(i) and timer_pulse(i);
+      else
+        audio_clock(i) <= timer_pulse(i);
+      end if;
 
-        if (audc(i)(6) = '0') then
-          filter_b(i) := poly_17_9 and filter_a(i);-- 17 bit poly
-        else
-          filter_b(i) := poly4(3) and filter_a(i);-- 4 bit poly
-        end if;
-
-        if (audc(i)(5) = '0') then
-          poly_sel(i) <= filter_b(i);
-        else
-          poly_sel(i) <= filter_a(i);
-        end if;
+      if (audc(i)(6) = '1') then
+        audio_sample(i) <= poly4_sample(i);
+      else
+        audio_sample(i) <= poly_large_sample(i);
+      end if;
     end loop;
   end process;
 
-  p_high_pass_filters : process(audctl, poly_sel, poly_sel_hp_reg)
+  p_high_pass_filters : process(tone_gen_final, high_pass_sample)
   begin
-    poly_sel_hp <= poly_sel;
-
-    if (audctl(2) = '1') then
-      poly_sel_hp(1) <= poly_sel(1) xor poly_sel_hp_reg(1);
-    end if;
-
-    if (audctl(1) = '1') then
-      poly_sel_hp(2) <= poly_sel(2) xor poly_sel_hp_reg(2);
-    end if;
+    channel_output <= tone_gen_final;
+    channel_output(1) <= tone_gen_final(1) xor high_pass_sample(1);
+    channel_output(2) <= tone_gen_final(2) xor high_pass_sample(2);
   end process;
 
   p_audio_out : process
   begin
     wait until rising_edge(CLK);
     if (ENA = '1') then
+      if (audctl(2) = '0') then
+        high_pass_sample(1) <= '1';
+      elsif (timer_pulse(3) = '1') then
+        high_pass_sample(1) <= tone_gen_final(1);
+      end if;
+
+      if (audctl(1) = '0') then
+        high_pass_sample(2) <= '1';
+      elsif (timer_pulse(4) = '1') then
+        high_pass_sample(2) <= tone_gen_final(2);
+      end if;
+
       for i in 1 to 4 loop
-        -- filter reg
-        if (tone_gen_div(3) = '1') then -- tone gen 1 clocked by gen 3
-          poly_sel_hp_reg(1) <= poly_sel(1);
-        end if;
-
-        if (tone_gen_div(4) = '1') then -- tone gen 2 clocked by gen 4
-          poly_sel_hp_reg(2) <= poly_sel(2);
-        end if;
-
-        poly_sel_hp_t1 <= poly_sel_hp;
-
-        if (poly_sel_hp(i) = '1') and (poly_sel_hp_t1(i) = '0') then -- rising edge
-          tone_gen_final(i) <= not tone_gen_final(i);
+        if audio_clock(i) = '1' then
+          if audc(i)(5) = '1' then
+            tone_gen_final(i) <= not tone_gen_final(i);
+          else
+            tone_gen_final(i) <= audio_sample(i);
+          end if;
         end if;
       end loop;
     end if;
@@ -531,35 +496,30 @@ begin
 
   p_op_mixer : process
     variable vol : array_4x4;
-    variable sum12 : std_logic_vector(4 downto 0);
-    variable sum34 : std_logic_vector(4 downto 0);
-    variable sum : std_logic_vector(5 downto 0);
+    variable dac : array_4x6;
+    variable sum12 : std_logic_vector(6 downto 0);
+    variable sum34 : std_logic_vector(6 downto 0);
+    variable sum : std_logic_vector(7 downto 0);
   begin
     wait until rising_edge(CLK);
     if (ENA = '1') then
       for i in 1 to 4 loop
-        if (audc(i)(4) = '1') then -- vol only
+        if (audc(i)(4) = '1') then -- Volume-only mode.
+          vol(i) := audc(i)(3 downto 0);
+        elsif (channel_output(i) = '1') then
           vol(i) := audc(i)(3 downto 0);
         else
-          if (tone_gen_final(i) = '1') then
-            vol(i) := audc(i)(3 downto 0);
-          else
-            vol(i) := "0000";
-          end if;
+          vol(i) := "0000";
         end if;
+        dac(i) := pokey_dac(vol(i));
       end loop;
 
-      sum12 := ('0' & vol(1)) + ('0' & vol(2));
-      sum34 := ('0' & vol(3)) + ('0' & vol(4));
+      sum12 := ('0' & dac(1)) + ('0' & dac(2));
+      sum34 := ('0' & dac(3)) + ('0' & dac(4));
       sum := ('0' & sum12) + ('0' & sum34);
-
-      if (reset = '1') then
-        AUDIO_OUT <= "00000000";
-      else
-        AUDIO_OUT <= sum(5 downto 0) & "00";
-      end if;
+      AUDIO_OUT <= sum;
     end if;
   end process;
 
-  -- keyboard / serial etc to do
+  -- Keyboard, serial, and IRQ functions are not implemented.
 end architecture RTL;

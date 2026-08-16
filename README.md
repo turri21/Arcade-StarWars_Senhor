@@ -4,6 +4,8 @@ An FPGA implementation of Atari's classic color vector arcade games **Star Wars*
 
 Atari's 1983 Star Wars remains one of the most beloved arcade games ever made. With its glowing wire-frame Death Star trench, digitized voices of Obi-Wan and Darth Vader, and the iconic flight yoke controller, it was the closest thing to climbing into an X-wing cockpit — and for a generation of players, "Use the Force, Luke" still gives them chills.
 
+Atari's 1985 successor, **The Empire Strikes Back**, drops you into the Battle of Hoth in a snowspeeder, where you hunt probe droids and bring down AT-AT walkers with a limited supply of tow cables. The action then shifts to the Millennium Falcon for a running battle with TIE fighters and a desperate flight through the asteroid field, all under Darth Vader's ominous pull toward the dark side.
+
 ## Support the Project
 Hey, Videodr0me here! If you're having a blast with this core, consider supporting the project: [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-yellow?style=flat-square&logo=buy-me-a-coffee)](https://buymeacoffee.com/Videodr0me)
 
@@ -11,7 +13,7 @@ Hey, Videodr0me here! If you're having a blast with this core, consider supporti
 
 ## Original Hardware
 
-The original Star Wars arcade machine (Atari part number 136021) is built from the following major components:
+The original Star Wars arcade machine (Atari part number 136021) and the 1985 conversion kit for The Empire Strikes Back (Atari part number 136031) use the following major components:
 
 | Subsystem | Original Hardware | FPGA Implementation |
 |---|---|---|
@@ -21,31 +23,44 @@ The original Star Wars arcade machine (Atari part number 136021) is built from t
 | **Sound** | 4× Atari C012294 POKEY + TI TMS5220 speech synthesizer | POKEY in VHDL + TMS5220 with variable rate (TMS5220C mode) |
 | **Audio Filters** | TL084 quad op-amp low-pass filter + Reticon R5106 delay/reverb | Modeled in `audio_filter_tl084.sv` and `reticon_r5106.sv` |
 | **Display** | Amplifone XY color vector monitor (RGB analog) | Ultra high performance raster vector renderer with CRT profile pipeline, bloom, halo, phosphor decay, slot mask, and color processing |
-| **Controls** | Custom flight yoke with analog potentiometers (2-axis) | Mapped to MiSTer analog stick inputs, with digital fallback |
-| **Non-volatile RAM** | 256 bytes battery-backed NOVRAM (high scores, settings) | Saved to MiSTer SD card via NVRAM system |
+| **Controls** | Custom flight yoke with analog potentiometers (2-axis) | Analog stick, trackball/mouse, and digital control modes |
+| **Non-volatile RAM** | 256x4-bit X2212 NOVRAM (high scores, settings) | Saved to MiSTer SD card via NVRAM system |
 
 For those interested in the inner workings of the original arcade PCB, I have included my hand-verified transcription of the original AVG logic in the research folder. It is the exact blueprint I used to build the new AVG!
 
 ---
 ## Controls
 
-Star Wars uses an analog flight yoke. The yoke's X and Y axes are mapped to the primary analog axes of your MiSTer controller (digital fallback input controls are available).
+Star Wars uses an analog flight yoke. **Analog Stick** is the default and
+recommended input, while the core also supports trackball/mouse and digital
+control.
 
-> **🕹️ Calibration Tip:** The game **auto-calibrates** to your controller's range. When you first start playing, **move the analog stick in a full circle through its extreme positions** — this lets the game learn your stick's full range of motion. You can do this at any time, but the stage select screen is the ideal moment. If you are using digital inputs, you must also calibrate by pressing up, down, left and right on the directional pad until the crosshair reaches the edges of the screen in all directions.
+> **🕹️ Calibration Tip:** The game **auto-calibrates** to the available yoke
+> range. With an analog stick, move it through its full range after starting.
+> With mouse, trackball, or digital control, steer once to all four limits.
+> The stage select screen is a convenient place to do this.
 
 | Input | Function |
 |---|---|
 | **Analog Stick** | Move crosshairs (Pitch / Yaw) — proportional, recommended |
-| **Fire (Button A)** | Fire lasers — also starts the game after inserting coins |
-| **Shield (Button B)** | Shield button |
-| **Aux Coin (Button Start)** | Auxiliary coin input (also used to navigate Test Mode menus) |
-| **Coin L / Coin R** | Insert coins (mapped to R / L by default) |
+| **Fire L / Fire R (A / Y)** | Fire lasers; either fire control also starts the game after inserting coins. |
+| **Shield L / Shield R (B / Z)** | Original cabinet shield buttons; function as additional fire buttons. |
+| **Aux Coin (Start)** | Auxiliary coin input; also advances Test Mode menus. |
+| **Coin L / Coin R (R / L)** | Insert coins. |
 
-If you do not have access to an analog control device, you can play with a digital D-Pad or keyboard using the core's built-in digital control option. You can configure its behavior in the **Input Controls** OSD menu:
-- **Input**: Set to **Auto** to seamlessly engage digital control whenever you press a direction, or **Digital** to force it permanently.
-- **Digital Sensitivity**: Adjusts how quickly the virtual yoke steers and re-centers.
+The **Input Controls** menu provides these choices:
 
-> **Tip:** The original arcade machine has no "Start" button. After inserting a coin, pressing **Fire** on the yoke starts the game. An analog stick is strongly recommended for the best experience. You can also invert the **Y-Axis** in the Input Controls menu to accommodate unusual controllers or personal preference.
+| Option | Behavior |
+|---|---|
+| **Analog Stick** | Direct proportional control from the primary analog stick. |
+| **Trackball / Mouse** | Steer with a trackball or mouse. |
+| **Digital Centering** | Directions move the yoke; releasing them returns it to center. |
+| **Digital Relative** | Directions move the yoke and it holds its last position when released. |
+| **Auto** | Starts with the analog stick and switches to whichever supported input moves. |
+| **Sensitivity** | Scales analog, trackball/mouse, and digital movement from 0.125x to 2.0x. |
+| **Y-Axis** | Selects normal or inverted vertical control. |
+
+> **Tip:** The original arcade machine has no "Start" button. After inserting a coin, pressing **Fire** on the yoke starts the game. An analog stick is strongly recommended for the best experience. You can also invert the **Y-Axis** and adjust **Sensitivity** to suit your controller and preferences.
 
 
 ---
@@ -58,39 +73,55 @@ The CRT-style video effects pipeline uses MiSTer SDRAM and requires a 32MB SDRAM
 
 ## Recommended MiSTer Video Settings
 
-The MiSTer core automatically adapts to your chosen resolution and optimizes the video quality. It also features special modes for 15kHz and 31kHz CRT monitors.
+The renderer supports 240p, 480i, 480p, 720p, and 1080p. **1080p is
+recommended** with `hdr=1` for the highest vector detail and dynamic range.
+Compatible 720p displays can also use the optional 120 Hz mode.
 
-For flat-panel displays, we highly recommend enabling the **HDR** option in `mister.ini`, if your monitor supports it. 1080p 60Hz is the primary recommendation for highest detail and smooth vector rendering. 720p 120Hz is also a good choice for smoother frame pacing on compatible displays. Both modes are well suited for **4K displays** because of the integer scaling ratio. The **Profile:** option in the OSD applies resolution-aware CRT effect settings.
-
-Append these settings to your `mister.ini` file under the exact `[Star Wars]` header. Please ensure there is only one Star Wars core file in your MiSTer's search paths. Note that MiSTer filters and shadow masks are not needed and should be left blank (as shown below) to ensure best quality.
-
-```ini
-[Star Wars]
-video_mode=8              ; 8 = 1080p or use 0 = 720p (enables 120Hz option)
-vsync_adjust=2            ; 0 or 1 is also fine if you run into issues.
-vscale_mode=0             ; Let the core's auto aspect ratio control scaling
-hdmi_limited=0            ; Set to 1 if the image is too dark (e.g. on limited range TVs)
-hdr=1                     ; HDR output — improves contrast/luminosity (Recommended!)
-vrr_mode=0                ; Try 1 (or higher) if you have issues (e.g. 120Hz).
-vfilter_default=          ; No filters needed! Leave blank.
-vfilter_vertical_default= ; Override any global vertical filter
-vfilter_scanlines_default=; Override any global scanline filter
-```
-
-> **Note:** The empty filter lines (`vfilter_default=` etc.) in the INI snippet ensure that any global scaler filters from your `[MiSTer]` section are overridden. Also disable any shadow masks as it might interfere with the new adaptive slot mask feature.
-
-### 15kHz CRT / Pure Integer Scaling
-
-If you are outputting to a 15kHz CRT (e.g. via direct_video or analog VGA), force the core's exact native resolution and aspect ratio:
+For high-resolution flat-panel output, place the following settings under the
+exact `[Star Wars]` header at the end of `MiSTer.ini`. The empty filter and
+mask entries prevent MiSTer's scaler effects from altering the core's own CRT
+pipeline.
 
 ```ini
 [Star Wars]
-video_mode=640,240,60 ; Standard MiSTer 15kHz resolution. You can experiment with others, but ensure width >= 640 and height is around 240 e.g. video_mode=640,44,64,88,240,3,2,17,13150,-hsync,-vsync
-vscale_mode=4
-vsync_adjust=0 ; You might want to try all three modes 0, 1 & 2
-composite_sync=1 ; Try 1 = composite sync or 0 = separate sync
+video_mode=8   ; 8 = 1080p, 0 = 720p
+hdr=1
+vsync_adjust=1 ; use 1 or 2 for 120 Hz output
+vscale_mode=0
+hdmi_limited=0 ; use 1 for limited-range displays (or if output is too dark)
+vfilter_default=
+vfilter_vertical_default=
+vfilter_scanlines_default=
+shmask_default=
+shmask_mode_default=0
 ```
-> **Tip:** For 31kHz monitors, use the same INI addition and set `video_mode=640,480,60`.
+
+### CRT and Direct Video Output
+
+#### CRT Output
+
+> **Required for CRT output:** Add all three entries below to the `[Star Wars]`
+> section of `MiSTer.ini`. These settings provide the best image quality and
+> are required for 480i output.
+
+```ini
+[Star Wars]
+video_mode=720,240,60
+vga_scaler=0
+forced_scandoubler=0
+```
+
+Place this section at the end of `MiSTer.ini` so it overrides earlier global
+settings. Under **Video Timing & Geometry**, **15 kHz Format** selects 480i or
+240p, with 480i used by default. Do not use `vga_scaler=1` or custom modelines.
+For a 31 kHz CRT, use `video_mode=720,480,60` instead.
+
+#### Direct Video
+
+For Direct Video, use the same settings above and additionally add
+`direct_video=1` to the `[Star Wars]` section of `MiSTer.ini`. **Direct Video
+Scan Rate** then selects 15 kHz or 31 kHz output, while **15 kHz Format**
+selects 480i or 240p at 15 kHz.
 
 ---
 
@@ -102,26 +133,33 @@ If you are updating from an older release, delete the MiSTer config files for th
 
 ## OSD Options
 
-### Display
+### Video Timing & Geometry
 
 | Option | Description |
 |---|---|
-| **Aspect Ratio** | **Optimized** auto-detects the HDMI resolution and picks the intended core aspect. **Stretched** fills the display. **Pixel Perfect** forces direct pixel mapping. |
-| **120Hz (720p only)** | Enables ~120Hz output when using a 720p video mode. Useful for smoother frame pacing on compatible displays. |
+| **Orientation** | Provides all eight unique rotation and mirroring combinations. |
+| **Zoom** | **Normal** preserves the released framing. **Wide** shows additional space around the game image. |
 | **Buffer Mode** | Selects how the renderer swaps completed vector frames. The default mode is recommended. |
-| **Profile:** | Selects from five video presets and two additional custom slots. **Custom 1** and **Custom 2** expose the full advanced video control set. |
+| **120Hz (720p only)** | Enables ~120Hz output when using a 720p video mode. Useful for smoother frame pacing on compatible displays. |
+| **Direct Video Scan Rate** | Selects 15 kHz or 31 kHz output when Direct Video is active. |
+| **15 kHz Format** | Selects 480i or 240p in the 15 kHz output bracket. 480i is the default. |
+| **CRT Vertical Position** | Moves 240p, 480p, or 480i output vertically. Positive values move the picture down. |
+| **Aspect Ratio** | **Optimized** auto-detects the HDMI resolution and picks the intended core aspect. **Stretched** fills the display. **Pixel Perfect** forces direct pixel mapping. |
 
 ### Video Profiles
 
 | Profile | Description |
 |---|---|
-| **Off** | Direct output path bypassing the CRT effects filter pipeline. |
-| **A Touch of CRT** | Subtle CRT halo and bloom for modern anti-aliased vector drawing. |
+| **A Touch of CRT** | Default. Subtle CRT halo and bloom for modern anti-aliased vector drawing. |
 | **80s Cruise Control** | Amplifone color, authentic slot mask, richer halos, and more bloom. |
 | **80s Overdrive** | Overdriven CRT glow with stronger phosphor decay; results vary with your display and settings. |
 | **Neon Fever Dream** | Stylized high-energy CRT look with excessive flashing bright lights. |
 | **Pink Flamingo ESB** | Channel-swapped fun variant, especially suited for Empire Strikes Back. |
 | **Custom 1 / Custom 2** | Two independent user-configurable slots exposing the full set of advanced controls. |
+| **Off** | Direct output path bypassing the CRT effects filter pipeline. |
+
+See [CRT Profile Settings](Profiles/README.md) for the exact settings used at
+each resolution.
 
 > **Warning:** Neon Fever Dream and Pink Flamingo ESB can produce excessive flashing bright lights.
 

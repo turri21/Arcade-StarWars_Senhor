@@ -66,7 +66,6 @@ module vfb_top (
 
 	// Custom and frame sync signals
 	input  [7:0]  FLASH_PARAM,
-	input         OSD_120HZ,
 	input         FRAME_DONE,
 	input   [1:0] BUFFER_MODE,
 	input   [2:0] DOT_MODE,
@@ -80,13 +79,14 @@ module vfb_top (
 	input         osd_color_space,
 	input  [2:0]  osd_color_channels,
 	input         osd_slot_mask,
-	input         osd_full_bypass,
+	input         osd_slot_mask_rows,
+	input         full_bypass_active,
+	output wire   raw_path_vblank,
+	output wire   processed_path_vblank,
 
 	output wire   arbiter_reset_busy
 );
 
-// Localparams
-localparam TILE_SIZE = 8; // 8x8 tiles
 localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 
 	// Rasterizer to Cache Manager Handshake
@@ -110,13 +110,11 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 	wire        eof_token_popped;
 	wire [1:0] eof_frame_time_bucket_popped;
 
-	// Frame pacing trigger from Readout to Cache Manager
+	// VBLANK presentation request
 	wire        vbl_swap_req;
 
-	wire        fifo_empty;
 	wire  [1:0] buf_display;
 	wire  [1:0] buf_draw;
-	wire        arbiter_idle;
 
 	// Framebuffer / DDRAM client reset
 	assign DDRAM_CLK = clk_sys;
@@ -129,10 +127,8 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 	always_ff @(posedge clk_sys)
 		filter_reset_q <= reset | video_timing_reset;
 
-	// Phosphor Persistence: EOF-Rate Adaptive Draw Index Counter (12 MHz domain)
-	// Nominally ticks at 40.5 Hz * 16 with no reset at EOF.
-	// EOF-to-EOF timing is bucketed into 1.0x/1.5x/2.0x/2.5x and selects the
-	// draw-index divider for the next source frame.
+	// Advance the 16-phase draw-age clock at the measured AVG frame rate.
+	// EOF periods select the divider used by the following source frame.
 	localparam [15:0] DRAW_IDX_DIV_1X  = 16'd18519;
 	localparam [15:0] DRAW_IDX_DIV_15X = 16'd27779;
 	localparam [15:0] DRAW_IDX_DIV_2X  = 16'd37038;
@@ -238,9 +234,7 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 		end
 	end
 
-	vfb_rasterizer #(
-		.TILE_SIZE(TILE_SIZE)
-	) rasterizer_inst (
+	vfb_rasterizer rasterizer_inst (
 		.clk_sys(clk_sys),
 		.clk_12(clk_12),
 		.reset(fb_client_reset),
@@ -254,8 +248,6 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 		.BEAM_ON(BEAM_ON),
 		.FRAME_DONE(FRAME_DONE),
 		.DOT_MODE(DOT_MODE),
-		.FB_WIDTH(RENDER_WIDTH),
-		.FB_HEIGHT(RENDER_HEIGHT),
 
 		// Outputs to Cache Manager
 		.pixel_valid(pixel_valid),
@@ -268,8 +260,7 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 
 
 		.eof_token(eof_token),
-		.fifo_full_led(FIFO_FULL_LED),
-		.fifo_empty(fifo_empty)
+		.fifo_full_led(FIFO_FULL_LED)
 	);
 
 	// Inter-module signals
@@ -326,13 +317,11 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 	);
 
 	vfb_tile_cache_manager #(
-		.TILE_SIZE(TILE_SIZE),
 		.CACHE_COUNT(CACHE_COUNT)
 	) cache_manager_inst (
 		.clk_sys(clk_sys),
 		.reset(fb_client_reset),
 
-		.FB_WIDTH(RENDER_WIDTH),
 		.FB_HEIGHT(RENDER_HEIGHT),
 
 		// Rasterizer Interface
@@ -343,7 +332,6 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 		.pixel_data(pixel_data),
 
 		.eof_token(eof_token),
-		.fifo_empty(fifo_empty),
 
 		// Buffer Controller Interface
 		.eof_token_popped(eof_token_popped),
@@ -376,13 +364,11 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 		.flush_advance(flush_advance),
 
 		.display_tile_query(display_tile_query),
-		.display_tile_dirty(display_tile_dirty),
-		.arbiter_idle(arbiter_idle)
+		.display_tile_dirty(display_tile_dirty)
 	);
 
 	wire [28:0] readout_addr = display_buf_base + ({13'd0, readout_tile_id} << 4);
 	wire [8:0] readout_burstcnt;
-	wire [23:0] arbiter_debug_flashparam;
 
 	vfb_ddr_arbiter ddr_arbiter_inst (
 		.clk_sys(clk_sys),
@@ -425,8 +411,6 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 		.flush_be(flush_be),
 		.flush_advance(flush_advance),
 
-		.debug_flashparam(arbiter_debug_flashparam),
-		.arbiter_idle(arbiter_idle),
 		.reset_busy(arbiter_reset_busy)
 	);
 
@@ -440,7 +424,7 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 
 	// OSD controls are decoded into numeric values.
 	wire [18:0] osd_control_in = {
-		osd_full_bypass,
+		osd_slot_mask_rows,
 		osd_slot_mask,
 		osd_color_channels,
 		osd_color_space,
@@ -461,9 +445,13 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 	logic        osd_color_space_vid;
 	logic [2:0]  osd_color_channels_vid;
 	logic        osd_slot_mask_vid;
-	logic        osd_full_bypass_vid;
+	logic        osd_slot_mask_rows_vid;
+	logic        full_bypass_active_q = 1'b0;
 	logic [9:0]  bloom_curve_gain;
 	logic [7:0]  halo_filter;
+
+	always_ff @(posedge clk_sys)
+		full_bypass_active_q <= full_bypass_active;
 
 	function automatic [9:0] decode_bloom_curve_gain(
 		input logic [2:0] sel
@@ -509,7 +497,7 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 			osd_color_space_vid <= osd_color_space;
 			osd_color_channels_vid <= osd_color_channels;
 			osd_slot_mask_vid <= osd_slot_mask;
-			osd_full_bypass_vid <= osd_full_bypass;
+			osd_slot_mask_rows_vid <= osd_slot_mask_rows;
 			bloom_curve_gain <=
 				decode_bloom_curve_gain(osd_bloom_curve);
 			halo_filter <= decode_halo_filter(osd_halo_filter);
@@ -530,13 +518,13 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 			osd_color_space_vid <= osd_control_stable[13];
 			osd_color_channels_vid <= osd_control_stable[16:14];
 			osd_slot_mask_vid <= osd_control_stable[17];
-			osd_full_bypass_vid <= osd_control_stable[18];
+			osd_slot_mask_rows_vid <= osd_control_stable[18];
 		end
 	end
 
-	vfb_readout #(
-		.TILE_SIZE(TILE_SIZE)
-	) readout_inst (
+	wire [15:0] raw_canonical_pixel;
+
+	vfb_readout readout_inst (
 		.clk_sys(clk_sys),
 		.reset(fb_client_reset | video_timing_reset),
 
@@ -554,6 +542,7 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 		.VGA_R(raw_vga_r),
 		.VGA_G(raw_vga_g),
 		.VGA_B(raw_vga_b),
+		.CANONICAL_PIXEL(raw_canonical_pixel),
 		.VGA_HS(raw_vga_hs),
 		.VGA_VS(raw_vga_vs),
 		.VGA_HBLANK(raw_vga_hblank),
@@ -578,9 +567,6 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 		.osd_phosphor_mode(osd_phosphor_mode_vid)
 	);
 
-	wire sdram_delay_overflow;
-	wire sdram_delay_underflow;
-	wire sdram_delay_init_done;
 	wire [7:0] filtered_vga_r;
 	wire [7:0] filtered_vga_g;
 	wire [7:0] filtered_vga_b;
@@ -588,6 +574,8 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 	wire       filtered_vga_vs;
 	wire       filtered_vga_hblank;
 	wire       filtered_vga_vblank;
+	assign raw_path_vblank = raw_vga_vblank;
+	assign processed_path_vblank = filtered_vga_vblank;
 
 	vfb_halo_pipeline filter_inst (
 		.clk_sys(clk_sys),
@@ -602,7 +590,9 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 		.color_space_amp709(osd_color_space_vid),
 		.color_channels(osd_color_channels_vid),
 		.slot_mask_enable(osd_slot_mask_vid),
+		.slot_mask_rows(osd_slot_mask_rows_vid),
 
+		.CANONICAL_IN(raw_canonical_pixel),
 		.VGA_R_IN(raw_vga_r),
 		.VGA_G_IN(raw_vga_g),
 		.VGA_B_IN(raw_vga_b),
@@ -630,9 +620,9 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 		.sdram_dqm(SDRAM_DQM),
 		.sdram_addr(SDRAM_A),
 		.sdram_ba(SDRAM_BA),
-		.sdram_overflow(sdram_delay_overflow),
-		.sdram_underflow(sdram_delay_underflow),
-		.sdram_init_done(sdram_delay_init_done)
+		.sdram_overflow(),
+		.sdram_underflow(),
+		.sdram_init_done()
 	);
 
 	// Full bypass passes the readout packet directly to the MiSTer
@@ -647,7 +637,7 @@ localparam CACHE_COUNT = 4; // Configurable cache count (4 or 8)
 			VGA_HBLANK <= 1'b1;
 			VGA_VBLANK <= 1'b1;
 		end else if (ce_pix) begin
-			if (osd_full_bypass_vid) begin
+			if (full_bypass_active_q) begin
 				VGA_R <= raw_vga_r;
 				VGA_G <= raw_vga_g;
 				VGA_B <= raw_vga_b;

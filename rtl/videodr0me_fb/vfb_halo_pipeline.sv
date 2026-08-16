@@ -27,7 +27,9 @@ module vfb_halo_pipeline #(
 	input  logic        color_space_amp709,
 	input  logic [2:0]  color_channels,
 	input  logic        slot_mask_enable,
+	input  logic        slot_mask_rows,
 
+	input  logic [15:0] CANONICAL_IN,
 	input  logic [7:0]  VGA_R_IN,
 	input  logic [7:0]  VGA_G_IN,
 	input  logic [7:0]  VGA_B_IN,
@@ -61,6 +63,7 @@ module vfb_halo_pipeline #(
 	output logic        sdram_init_done
 );
 
+	logic [15:0] delayed_canonical;
 	logic [7:0] delayed_r;
 	logic [7:0] delayed_g;
 	logic [7:0] delayed_b;
@@ -82,16 +85,12 @@ module vfb_halo_pipeline #(
 		.clk_sys(clk_sys),
 		.reset(primary_line_delay_reset_q),
 		.ce_pix(ce_pix),
-		.VGA_R_IN(VGA_R_IN),
-		.VGA_G_IN(VGA_G_IN),
-		.VGA_B_IN(VGA_B_IN),
+		.CANONICAL_IN(CANONICAL_IN),
 		.VGA_HS_IN(VGA_HS_IN),
 		.VGA_VS_IN(VGA_VS_IN),
 		.VGA_HBLANK_IN(VGA_HBLANK_IN),
 		.VGA_VBLANK_IN(VGA_VBLANK_IN),
-		.VGA_R_OUT(delayed_r),
-		.VGA_G_OUT(delayed_g),
-		.VGA_B_OUT(delayed_b),
+		.CANONICAL_OUT(delayed_canonical),
 		.VGA_HS_OUT(delayed_hs),
 		.VGA_VS_OUT(delayed_vs),
 		.VGA_HBLANK_OUT(delayed_hblank),
@@ -110,6 +109,13 @@ module vfb_halo_pipeline #(
 		.overflow(sdram_overflow),
 		.underflow(sdram_underflow),
 		.init_done(sdram_init_done)
+	);
+
+	vfb_starwars_color delayed_color (
+		.canonical_in(delayed_canonical),
+		.red(delayed_r),
+		.green(delayed_g),
+		.blue(delayed_b)
 	);
 
 	(* ramstyle = "MLAB" *) logic [27:0] horizontal_delay
@@ -181,8 +187,6 @@ module vfb_halo_pipeline #(
 		.VGA_R_IN(VGA_R_IN),
 		.VGA_G_IN(VGA_G_IN),
 		.VGA_B_IN(VGA_B_IN),
-		.VGA_HS_IN(VGA_HS_IN),
-		.VGA_VS_IN(VGA_VS_IN),
 		.VGA_HBLANK_IN(VGA_HBLANK_IN),
 		.VGA_VBLANK_IN(VGA_VBLANK_IN),
 		.HALO_R_OUT(wide_halo_r),
@@ -278,6 +282,7 @@ module vfb_halo_pipeline #(
 		.color_space_amp709(color_space_amp709),
 		.color_channels(color_channels),
 		.slot_mask_enable(slot_mask_enable),
+		.slot_mask_rows(slot_mask_rows),
 		.VGA_R_IN(present_r),
 		.VGA_G_IN(present_g),
 		.VGA_B_IN(present_b),

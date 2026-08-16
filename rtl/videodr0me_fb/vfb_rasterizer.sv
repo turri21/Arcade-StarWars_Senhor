@@ -5,7 +5,6 @@
 // ============================================================================
 
 module vfb_rasterizer #(
-	parameter TILE_SIZE = 8,
 	parameter FIFO_ADDR_W = 10
 ) (
 	input  logic clk_sys,
@@ -21,8 +20,6 @@ module vfb_rasterizer #(
 	input  logic        BEAM_ON,
 	input  logic        FRAME_DONE,
 	input  logic [2:0]  DOT_MODE,
-	input  logic [11:0] FB_WIDTH,
-	input  logic [11:0] FB_HEIGHT,
 
 	// Cache Manager Interface (clk_sys)
 	output logic        pixel_valid,
@@ -34,8 +31,7 @@ module vfb_rasterizer #(
 	input  logic [1:0]  frame_time_bucket, // clk_12 EOF metadata bucket
 
 	output logic        eof_token,
-	output logic        fifo_full_led,
-	output logic        fifo_empty
+	output logic        fifo_full_led
 );
 
 	localparam FIFO_DEPTH = 1 << FIFO_ADDR_W;
@@ -129,7 +125,7 @@ module vfb_rasterizer #(
 				wr_ptr <= wr_ptr_next;
 				wr_ptr_g <= wr_ptr_g_next;
 			end else begin
-				// The cycle-exact AVG cannot be backpressured. Drop only the
+				// The AVG source cannot be backpressured. Drop only the
 				// new event, preserve FIFO ordering, and latch the warning.
 				fifo_overflow_12 <= 1'b1;
 			end
@@ -141,7 +137,7 @@ module vfb_rasterizer #(
 		wr_ptr_g_sync1 <= wr_ptr_g;
 		wr_ptr_g_sync2 <= wr_ptr_g_sync1;
 	end
-	assign fifo_empty = (rd_ptr_g == wr_ptr_g_sync2);
+	wire fifo_empty = (rd_ptr_g == wr_ptr_g_sync2);
 
 	// FIFO fill level LED with display timer
 	wire [FIFO_PTR_W-1:0] wr_ptr_bin = g2b(wr_ptr_g_sync2);

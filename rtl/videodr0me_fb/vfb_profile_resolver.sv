@@ -26,8 +26,7 @@ module vfb_profile_resolver (
 	output logic [1:0]  phosphor_mode,
 	output logic        color_space,
 	output logic [2:0]  color_channels,
-	output logic        slot_mask,
-	output logic        full_bypass
+	output logic        slot_mask
 );
 
 	localparam logic [2:0] PROFILE_OFF        = 3'd0;
@@ -128,32 +127,64 @@ module vfb_profile_resolver (
 		end
 	endfunction
 
+	function automatic logic [22:0] fixed_240p;
+		input logic [2:0] profile_i;
+		begin
+			case (profile_i)
+				PROFILE_TOUCH: fixed_240p = pack_settings(
+					DOT_AUTO, TONE_BRIGHT, BLOOM_TIGHT, CURVE_MILD,
+					HALO_025X, SPREAD_WIDE1, PHOSPHOR_OFF,
+					COLORSPACE_OFF, CHANNEL_RGB, SLOT_MASK_OFF);
+				PROFILE_TYPICAL: fixed_240p = pack_settings(
+					DOT_AUTO, TONE_BRIGHT, BLOOM_TIGHT, CURVE_MILD_P,
+					HALO_033X, SPREAD_WIDE1, PHOSPHOR_OFF,
+					COLORSPACE_OFF, CHANNEL_RGB, SLOT_MASK_OFF);
+				PROFILE_OVERDRIVEN: fixed_240p = pack_settings(
+					DOT_AUTO, TONE_BRIGHT, BLOOM_SOFT, CURVE_MILD,
+					HALO_050X, SPREAD_WIDE2, PHOSPHOR_LUT_C,
+					COLORSPACE_OFF, CHANNEL_RGB, SLOT_MASK_OFF);
+				PROFILE_NEON: fixed_240p = pack_settings(
+					DOT_AUTO, TONE_BRIGHT, BLOOM_TIGHT, CURVE_STRONG,
+					HALO_075X, SPREAD_WIDE1, PHOSPHOR_LUT_B,
+					COLORSPACE_OFF, CHANNEL_RGB, SLOT_MASK_OFF);
+				PROFILE_PINK: fixed_240p = pack_settings(
+					DOT_AUTO, TONE_BRIGHT, BLOOM_TIGHT, CURVE_STRONG,
+					HALO_075X, SPREAD_WIDE1, PHOSPHOR_LUT_B,
+					COLORSPACE_OFF, CHANNEL_GRB, SLOT_MASK_OFF);
+				default: fixed_240p = pack_settings(
+					DOT_AUTO, TONE_LINEAR1, BLOOM_OFF, CURVE_MINIMAL,
+					HALO_OFF, SPREAD_ORIGINAL, PHOSPHOR_OFF,
+					COLORSPACE_OFF, CHANNEL_RGB, SLOT_MASK_OFF);
+			endcase
+		end
+	endfunction
+
 	function automatic logic [22:0] fixed_480p;
 		input logic [2:0] profile_i;
 		begin
 			case (profile_i)
 				PROFILE_TOUCH: fixed_480p = pack_settings(
-					DOT_AUTO, TONE_BRIGHT, BLOOM_TIGHT, CURVE_MILD,
-					HALO_025X, SPREAD_WIDE3, PHOSPHOR_OFF,
+					DOT_2X, TONE_BRIGHT, BLOOM_TIGHT, CURVE_MILD,
+					HALO_025X, SPREAD_WIDE1, PHOSPHOR_OFF,
 					COLORSPACE_OFF, CHANNEL_RGB, SLOT_MASK_OFF);
 				PROFILE_TYPICAL: fixed_480p = pack_settings(
-					DOT_AUTO, TONE_BRIGHT, BLOOM_TIGHT, CURVE_MILD_P,
-					HALO_033X, SPREAD_WIDE3, PHOSPHOR_OFF,
-					COLORSPACE_AMP709, CHANNEL_RGB, SLOT_MASK_ON);
+					DOT_2X, TONE_BRIGHT, BLOOM_TIGHT, CURVE_MILD_P,
+					HALO_033X, SPREAD_WIDE1, PHOSPHOR_OFF,
+					COLORSPACE_OFF, CHANNEL_RGB, SLOT_MASK_OFF);
 				PROFILE_OVERDRIVEN: fixed_480p = pack_settings(
-					DOT_AUTO, TONE_BRIGHT, BLOOM_SOFT, CURVE_MILD,
+					DOT_2X, TONE_BRIGHT, BLOOM_SOFT, CURVE_MILD,
 					HALO_050X, SPREAD_WIDE2, PHOSPHOR_LUT_C,
-					COLORSPACE_AMP709, CHANNEL_RGB, SLOT_MASK_ON);
+					COLORSPACE_OFF, CHANNEL_RGB, SLOT_MASK_OFF);
 				PROFILE_NEON: fixed_480p = pack_settings(
-					DOT_AUTO, TONE_BRIGHT, BLOOM_TIGHT, CURVE_STRONG,
+					DOT_2X, TONE_BRIGHT, BLOOM_TIGHT, CURVE_STRONG,
 					HALO_075X, SPREAD_WIDE1, PHOSPHOR_LUT_B,
 					COLORSPACE_OFF, CHANNEL_RGB, SLOT_MASK_OFF);
 				PROFILE_PINK: fixed_480p = pack_settings(
-					DOT_AUTO, TONE_BRIGHT, BLOOM_TIGHT, CURVE_STRONG,
+					DOT_2X, TONE_BRIGHT, BLOOM_TIGHT, CURVE_STRONG,
 					HALO_075X, SPREAD_WIDE1, PHOSPHOR_LUT_B,
 					COLORSPACE_OFF, CHANNEL_GRB, SLOT_MASK_OFF);
 				default: fixed_480p = pack_settings(
-					DOT_AUTO, TONE_LINEAR1, BLOOM_OFF, CURVE_MINIMAL,
+					DOT_2X, TONE_LINEAR1, BLOOM_OFF, CURVE_MINIMAL,
 					HALO_OFF, SPREAD_ORIGINAL, PHOSPHOR_OFF,
 					COLORSPACE_OFF, CHANNEL_RGB, SLOT_MASK_OFF);
 			endcase
@@ -233,8 +264,10 @@ module vfb_profile_resolver (
 					selected_settings = fixed_1080p(profile);
 				else if (fb_height >= 12'd700)
 					selected_settings = fixed_720p(profile);
-				else
+				else if (fb_height >= 12'd400)
 					selected_settings = fixed_480p(profile);
+				else
+					selected_settings = fixed_240p(profile);
 			end
 		endcase
 
@@ -248,7 +281,6 @@ module vfb_profile_resolver (
 		color_space    = selected_settings[4];
 		color_channels = selected_settings[3:1];
 		slot_mask      = selected_settings[0];
-		full_bypass    = (profile == PROFILE_OFF);
 	end
 
 endmodule

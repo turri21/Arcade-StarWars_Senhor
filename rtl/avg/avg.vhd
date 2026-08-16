@@ -1,7 +1,6 @@
 -- Atari Star Wars Analog Vector Generator (AVG) by Videodr0me 2026
 --
--- PROM-based state machine matching original hardware timing.
--- Cycle exact including normalization substates.
+-- PROM-driven Star Wars AVG sequencer with 12.096 MHz normalization substates.
 -- The 256x4 state PROM is loaded via the MRA download interface.
 -- States advance at 1.5 MHz (one state per clken tick = 8 master clocks at
 -- 12.096 MHz). During normalization (STROBE 0), the PROM state freezes
@@ -99,10 +98,7 @@ architecture Behavioral of avg is
 	signal intens_mod: STD_LOGIC_VECTOR(2 downto 0);
 	signal rgb: STD_LOGIC_VECTOR(2 downto 0);
 	signal z_mult: STD_LOGIC_VECTOR(10 downto 0);
-	-- Linear scale register (SWSIG.DOC: see LF13201 multiplying DAC, schematic p.26).
-	-- On the original PCB, linear_scale controls the beam VELOCITY via an
-	-- analog multiplier (LF13201), while the LS161 timer chain controls
-	-- draw DURATION. The two are independent hardware paths.
+	-- Scale the normalized coordinate step, modeling the coordinate DACs' variable XREF/YREF.
 	signal linear_scale_reg: STD_LOGIC_VECTOR(7 downto 0);
 	-- Binary scale register: 3-bit value (0-7) from STAT instruction.
 	-- On hardware, this is latched by the LS175 (6L, schematic p.25 Fig.1)
@@ -129,7 +125,7 @@ architecture Behavioral of avg is
 	-- and enables /ENORM (via S10) to clock LS194 shift registers at 12 MHz.
 	-- Terminates when DVY12!=DVY11 or DVX12!=DVX11 (S86 XOR -> S260 NOR).
 	signal norm_active: STD_LOGIC;                     -- normalization in progress
-	signal norm_count: STD_LOGIC_VECTOR(3 downto 0);   -- shift counter (diagnostic)
+	signal norm_count: STD_LOGIC_VECTOR(3 downto 0);   -- normalization shift count
 	-- 15-bit Vector Timer (schematic p.25 Fig.0: four cascaded LS161 counters
 	-- 1D/1C/1B/2B, clocked at 12 MHz during draw, enabled by PR111 (+5V pull-up),
 	-- loaded via fill-bit shifts during normalization and bin_scale).
@@ -247,7 +243,7 @@ begin
 					-- board gates the state machine clock via NOR gate 3E (LS02).
 					-- When /VMEM=1 (CPU accessing $0000-$3FFF), the NOR output is
 					-- forced LOW, blocking SM_CLK and freezing the PROM state machine.
-					-- Stall for exactly 1 tick (matching 1 E-cycle = 1 SM_CLK period)
+					-- Freeze the sequencer while CPU vector-memory ownership is asserted.
 					null;
 
 				else
@@ -350,7 +346,7 @@ begin
 									else
 										-- Scale (0111_SSS LLLLLLLL)
 										-- SSS = bin_scale -> LS175 latch (6L) -> LS191 counter (6M)
-										-- LLLLLLLL = linear_scale -> LF13201 DAC (schematic p.26)
+										-- LLLLLLLL = linear coordinate-step scale
 										linear_scale_reg <= instruction(7 downto 0);
 										bin_scale <= instruction(10 downto 8);
 									end if;

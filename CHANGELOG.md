@@ -1,6 +1,25 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## Release [20260816]
+
+### Update Notes
+- **Config Reset Required**: Delete the existing saved configuration for this core before first launch because the option layout has changed.
+
+### Added
+- **480i Output**: Added native 720x480i output for 15 kHz CRT displays, with 480i selected by default and 240p available as an alternative.
+- **Direct Video**: Added Direct Video output with selectable 15 kHz or 31 kHz scan rates; 15 kHz supports both 480i and 240p.
+- **Orientation and Zoom**: Added eight rotation/mirroring choices and a Wide framing option.
+- **Video Timing & Geometry**: Added a dedicated menu page for output timing, orientation, zoom, buffer mode, and aspect ratio.
+- **Profile Documentation**: Added detailed per-resolution settings for every fixed CRT profile.
+- **CRT Vertical Position**: Added vertical positioning for 240p, 480p, and 480i CRT output.
+- **Flight Yoke Inputs**: Added trackball/mouse, digital centering, digital relative, and automatic input modes with shared sensitivity control.
+
+### Changed
+- **Low-Resolution Video**: Increased 240p and 480p output from 640 to 720 active samples while retaining the previous game framing.
+- **Default Profile**: A Touch of CRT is now selected after resetting the core settings.
+- **POKEY Emulation**: Corrected polynomial sequencing, timer and linked-channel timing, high-pass behavior, and nonlinear audio output.
+
 ## Release [20260712]
 
 ### Update Notes

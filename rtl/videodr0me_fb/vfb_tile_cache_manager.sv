@@ -9,13 +9,11 @@
 // ============================================================================
 
 module vfb_tile_cache_manager #(
-	parameter TILE_SIZE = 8,
 	parameter CACHE_COUNT = 4
 ) (
 	input  logic clk_sys,
 	input  logic reset,
 
-	input  logic [11:0] FB_WIDTH,
 	input  logic [11:0] FB_HEIGHT,
 
 	// Rasterizer Interface
@@ -26,7 +24,6 @@ module vfb_tile_cache_manager #(
 	input  logic [15:0] pixel_data,   // RGB[15:13], draw_idx[12:9], intensity[8:0]
 
 	input  logic        eof_token,
-	input  logic        fifo_empty,
 
 	// Buffer Controller Interface
 	output logic        eof_token_popped,
@@ -62,9 +59,7 @@ module vfb_tile_cache_manager #(
 
 	// Readout Interface (Dirty Map Query)
 	input  logic [15:0] display_tile_query,
-	output logic        display_tile_dirty,
-
-	input  logic        arbiter_idle
+	output logic        display_tile_dirty
 );
 
 	// Buffer Base Addresses
@@ -88,6 +83,8 @@ module vfb_tile_cache_manager #(
 	logic [3:0]  r_offset_word, r_offset_word_buf;
 	logic [1:0]  r_offset_byte, r_offset_byte_buf;
 	logic [63:0] r_offset_mask, r_offset_mask_buf;
+	logic [7:0]  r_hit_hot;
+	logic        r_hit_valid;
 
 	logic s0_ready; // Driven by Cache Manager FSM
 
@@ -171,7 +168,6 @@ module vfb_tile_cache_manager #(
 	logic [1:0]  s1_offset_byte;
 	logic [2:0]  s1_cache_idx;
 	logic [2:0]  hit_idx;
-	logic [63:0] rmw_read_word;
 
 	logic flush_active = 0;
 	logic [2:0] flush_active_idx;
@@ -229,12 +225,9 @@ module vfb_tile_cache_manager #(
 	logic [7:0] slot_dirty_hit;
 	always_comb begin
 		hit_idx = 0;
-		cache_hit_hot = 8'd0;
+		slot_dirty_hit = 8'd0;
 		for (int i=0; i<CACHE_COUNT; i++) begin
-			if (cache_valid[i] && (cache_tile_id[i] == s0_tile_id)) begin
-				cache_hit_hot[i] = 1'b1;
-				hit_idx = i[2:0];
-			end
+			if (cache_hit_hot[i]) hit_idx = i[2:0];
 			slot_dirty_hit[i] = |(cache_bitmap[i] & s0_offset_mask);
 		end
 		cache_hit = |cache_hit_hot;
@@ -243,6 +236,8 @@ module vfb_tile_cache_manager #(
 		// tested against every slot bitmap in parallel.
 		dirty_hit = |(cache_hit_hot & slot_dirty_hit);
 	end
+
+	assign cache_hit_hot = r_hit_hot;
 
 	// PLRU Logic (Pseudo-LRU)
 	logic [6:0] plru_state = 7'b0;
@@ -324,7 +319,6 @@ module vfb_tile_cache_manager #(
 	// Tile Dirty Background Map (per quad-buffer)
 	// The largest mode is 184 x 135 tiles. A fixed 192-tile stride provides
 	// cheap shift/add addressing and fits all four maps in 32K entries each.
-	localparam TILEMAP_STRIDE = 192;
 	localparam TILEMAP_ADDR_W = 15;
 	localparam TILEMAP_DEPTH = 1 << TILEMAP_ADDR_W;
 
@@ -706,14 +700,62 @@ module vfb_tile_cache_manager #(
 		end
 	end
 
-	// RMW pipeline control signals
+	// Match cache tags before selecting the next input entry.
+	logic [7:0] primary_tag_match_hot;
+	logic [7:0] buffered_tag_match_hot;
+	logic [7:0] current_tag_match_hot;
+	always_comb begin
+		primary_tag_match_hot = 8'd0;
+		buffered_tag_match_hot = 8'd0;
+		current_tag_match_hot = 8'd0;
+		for (int i=0; i<CACHE_COUNT; i++) begin
+			primary_tag_match_hot[i] =
+				cache_valid[i] && (cache_tile_id[i] == pixel_tile_id);
+			buffered_tag_match_hot[i] =
+				cache_valid[i] && (cache_tile_id[i] == r_data_buf[15:0]);
+			current_tag_match_hot[i] =
+				cache_valid[i] && (cache_tile_id[i] == s0_tile_id);
+		end
+	end
+
+	wire fast_tag_allocation =
+		(rmw_state == RMW_WAIT_DIRTY_BIT) && s1_dirty_valid &&
+		has_free && s1_tile_clean;
+	wire fill_tag_allocation =
+		(rmw_state == RMW_WAIT_FILL) && fill_data_valid &&
+		(fill_beat_int == 4'd15);
+	wire tag_map_unstable =
+		(rmw_state == RMW_FLUSH_ALL) ||
+		fast_tag_allocation || fill_tag_allocation;
+
 	// In IDLE, accept pixels when initialized and no flush request is active.
 	logic manager_ready = 0;
 	always_ff @(posedge clk_sys) begin
 		manager_ready <= has_draw_buf && clearer_init_done;
 	end
 
-	assign s0_ready = (rmw_state == RMW_IDLE) && manager_ready && !flush_req;
+	assign s0_ready = (rmw_state == RMW_IDLE) && manager_ready &&
+		!flush_req && (!s0_valid || r_hit_valid);
+
+	always_ff @(posedge clk_sys) begin
+		if (rst_sys) begin
+			r_hit_hot <= 8'd0;
+			r_hit_valid <= 1'b0;
+		end else if (tag_map_unstable) begin
+			r_hit_valid <= 1'b0;
+		end else if (load_primary) begin
+			r_hit_hot <= primary_tag_match_hot;
+			r_hit_valid <= 1'b1;
+		end else if (unload_buffer) begin
+			r_hit_hot <= buffered_tag_match_hot;
+			r_hit_valid <= 1'b1;
+		end else if (r_valid && !r_hit_valid) begin
+			r_hit_hot <= current_tag_match_hot;
+			r_hit_valid <= 1'b1;
+		end else if (s0_ready && r_valid) begin
+			r_hit_valid <= 1'b0;
+		end
+	end
 
 	// RMW + Flush + Fill FSM
 	always_ff @(posedge clk_sys) begin

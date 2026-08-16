@@ -8,6 +8,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_rasterizer.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_ddr_arbiter.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_buffer_controller.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_tile_cache_manager.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_starwars_color.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_readout.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_blur.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_filter.sv
@@ -20,6 +21,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_halo_wide.s
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_profile_resolver.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_final_present.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_halo_pipeline.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_interlacer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/videodr0me_fb/vfb_top.sv
 set_global_assignment -name VERILOG_FILE rtl/cpu/mc6809e.v
 set_global_assignment -name VERILOG_FILE rtl/cpu/mc6809i.v
@@ -28,6 +30,9 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/rom_download.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mathbox.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/audio_filter_tl084.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/reticon_r5106.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/starwars_yoke_input.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/starwars_geometry.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/starwars_video.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/starwars.sv
 
 set_global_assignment -name SYSTEMVERILOG_FILE "Arcade-StarWars.sv"

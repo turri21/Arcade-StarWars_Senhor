@@ -1,11 +1,9 @@
 // ============================================================================
 // Audio Filter TL084 - Cascaded 2-pole IIR Low-Pass Filter by Videodr0me
 //
-// Matches the original Atari Star Wars PCB filter circuit (Sheet 16B):
-//   TL084 (1/4 3C) Multiple Feedback Low-Pass topology
-//   R39=R40=12K, C48=C49=C50=2700pF -> fc = 4913 Hz
-//
-// Implementation: two cascaded 1st-order IIR stages at 48 kHz
+// Two-pole digital approximation of the Star Wars output low-pass network.
+// The PCB uses one active second-order stage; this implementation uses two
+// cascaded first-order IIR stages at the audio sample rate.
 //   y[n] = y[n-1] + (x[n] - y[n-1]) >>> 1  (alpha = 0.5)
 //   Combined -3dB: ~3490 Hz, -12dB/oct asymptotic rolloff
 // ============================================================================
@@ -13,7 +11,7 @@
 module audio_filter_tl084 (
 	input              clk,
 	input              reset,
-	input              ce,       // Clock enable (48 kHz)
+	input              ce,       // Audio sample enable
 	input              enable,   // 1 = filter active, 0 = bypass
 	input  signed [16:0] audio_in,
 	output signed [16:0] audio_out

@@ -9,7 +9,7 @@
 // Pipeline:
 //   C1: optional Amplifone-to-Rec.709 color-space lift, R/G += floor(B/7)
 //   C2: 3-bit CRT color-channel assignment
-//   C3: optional two-column aperture/slot mask into a selected RGB+sync packet
+//   C3: optional two-column or two-row slot mask into an RGB+sync packet
 //   C4: final VGA-facing packet register
 //
 // RGB and sync/blank always travel as one packet.
@@ -23,6 +23,7 @@ module vfb_final_present (
 	input  logic        color_space_amp709,
 	input  logic [2:0]  color_channels,
 	input  logic        slot_mask_enable,
+	input  logic        slot_mask_rows,
 
 	input  logic [7:0]  VGA_R_IN,
 	input  logic [7:0]  VGA_G_IN,
@@ -115,7 +116,9 @@ module vfb_final_present (
 	logic selected_hblank;
 	logic selected_vblank;
 
-	logic slot_x_parity;
+	logic slot_column_parity;
+	logic slot_row_parity;
+	logic slot_line_active;
 
 	always_ff @(posedge clk_sys) begin
 		if (reset) begin
@@ -198,9 +201,11 @@ module vfb_final_present (
 			selected_vs <= 1'b1;
 			selected_hblank <= 1'b1;
 			selected_vblank <= 1'b1;
-			slot_x_parity <= 1'b0;
+			slot_column_parity <= 1'b0;
+			slot_row_parity <= 1'b0;
+			slot_line_active <= 1'b0;
 		end else if (ce_pix) begin
-			logic gap_column;
+			logic gap_position;
 			logic close_gap;
 
 			selected_hs <= ch_hs;
@@ -208,16 +213,26 @@ module vfb_final_present (
 			selected_hblank <= ch_hblank;
 			selected_vblank <= ch_vblank;
 
-			gap_column = slot_mask_enable && slot_x_parity;
+			gap_position = slot_mask_enable &&
+			               (slot_mask_rows ? slot_row_parity :
+			                                 slot_column_parity);
 			close_gap = (max3_u8(ch_r, ch_g, ch_b) >= 8'd200);
 
 			if (ch_hblank || ch_vblank) begin
 				selected_r <= 8'd0;
 				selected_g <= 8'd0;
 				selected_b <= 8'd0;
-				slot_x_parity <= 1'b0;
+				slot_column_parity <= 1'b0;
+				if (ch_vblank) begin
+					slot_row_parity <= 1'b0;
+					slot_line_active <= 1'b0;
+				end else begin
+					if (slot_line_active)
+						slot_row_parity <= ~slot_row_parity;
+					slot_line_active <= 1'b0;
+				end
 			end else begin
-				if (gap_column && !close_gap) begin
+				if (gap_position && !close_gap) begin
 					selected_r <= scale_14_16(ch_r);
 					selected_g <= scale_14_16(ch_g);
 					selected_b <= scale_14_16(ch_b);
@@ -226,7 +241,8 @@ module vfb_final_present (
 					selected_g <= ch_g;
 					selected_b <= ch_b;
 				end
-				slot_x_parity <= ~slot_x_parity;
+				slot_column_parity <= ~slot_column_parity;
+				slot_line_active <= 1'b1;
 			end
 		end
 	end

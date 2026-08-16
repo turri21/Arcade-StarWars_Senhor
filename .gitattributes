@@ -15,7 +15,7 @@ sys/** -text
 
 # Third-party RTL modules — leave line endings as-is
 rtl/A6532.vhd              -text
-rtl/pokey.vhd              -text
+rtl/pokey.vhd              -text whitespace=cr-at-eol
 rtl/cpu/mc6809e.v          -text
 rtl/cpu/mc6809i.v          -text
 rtl/avg/avg.vhd            -text

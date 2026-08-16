@@ -7,7 +7,6 @@
 // ============================================================================
 
 module vfb_readout #(
-	parameter TILE_SIZE = 8,
 	parameter MAX_BURST_TILES = 15
 ) (
 	input  logic clk_sys, // 125 MHz video/core clock
@@ -27,6 +26,7 @@ module vfb_readout #(
 	output logic [7:0]  VGA_R,
 	output logic [7:0]  VGA_G,
 	output logic [7:0]  VGA_B,
+	output logic [15:0] CANONICAL_PIXEL,
 	output logic        VGA_HS,
 	output logic        VGA_VS,
 	output logic        VGA_HBLANK,
@@ -554,87 +554,21 @@ module vfb_readout #(
 		end
 	end
 
-	// Excess/spill calculation on the registered (possibly decayed) intensity.
-	// Overflowed non-white pixels keep their accumulated 9-bit intensity, but
-	// present active channels at 232 and distribute the remaining energy over
-	// inactive channels. This keeps perceived overflow energy while reducing
-	// saturated active-channel input into the downstream bloom filter.
-	localparam logic [7:0] OVERFLOW_MAIN_CEIL = 8'd232;
-	localparam logic [8:0] OVERFLOW_SPILL_BASE = 9'd232;
-	localparam logic [8:0] OVERFLOW_SPILL_CAP = 9'd64;
+	wire background_pixel = (final_int == 9'd0) || (pixel_rgb == 3'b000);
+	wire flash_active = |FLASH_PARAM;
+	wire [15:0] canonical_pixel = background_pixel ?
+		(flash_active ? {3'b111, 4'd0, 1'b0, FLASH_PARAM[7:0]} : 16'd0) :
+		{pixel_rgb, 4'd0, final_int};
+	wire [7:0] canonical_r;
+	wire [7:0] canonical_g;
+	wire [7:0] canonical_b;
 
-	logic [8:0] overflow_rest;
-	logic [8:0] spill_half_raw;
-	logic [7:0] spill_full;
-	logic [7:0] spill_half;
-	logic [7:0] out_r_int;
-	logic [7:0] out_g_int;
-	logic [7:0] out_b_int;
-
-	assign overflow_rest =
-		final_int[8] ? (final_int - OVERFLOW_SPILL_BASE) : 9'd0;
-	assign spill_half_raw = overflow_rest >> 1;
-	assign spill_full =
-		(overflow_rest > OVERFLOW_SPILL_CAP)
-			? 8'd64 : overflow_rest[7:0];
-	assign spill_half =
-		(spill_half_raw > OVERFLOW_SPILL_CAP)
-			? 8'd64 : spill_half_raw[7:0];
-
-	always_comb begin
-		out_r_int = 8'd0;
-		out_g_int = 8'd0;
-		out_b_int = 8'd0;
-
-		if (!final_int[8]) begin
-			out_r_int = pixel_rgb[2] ? final_int[7:0] : 8'd0;
-			out_g_int = pixel_rgb[1] ? final_int[7:0] : 8'd0;
-			out_b_int = pixel_rgb[0] ? final_int[7:0] : 8'd0;
-		end else begin
-			unique case (pixel_rgb)
-				3'b001: begin
-					out_r_int = spill_half;
-					out_g_int = spill_half;
-					out_b_int = OVERFLOW_MAIN_CEIL;
-				end
-				3'b010: begin
-					out_r_int = spill_half;
-					out_g_int = OVERFLOW_MAIN_CEIL;
-					out_b_int = spill_half;
-				end
-				3'b011: begin
-					out_r_int = spill_full;
-					out_g_int = OVERFLOW_MAIN_CEIL;
-					out_b_int = OVERFLOW_MAIN_CEIL;
-				end
-				3'b100: begin
-					out_r_int = OVERFLOW_MAIN_CEIL;
-					out_g_int = spill_half;
-					out_b_int = spill_half;
-				end
-				3'b101: begin
-					out_r_int = OVERFLOW_MAIN_CEIL;
-					out_g_int = spill_full;
-					out_b_int = OVERFLOW_MAIN_CEIL;
-				end
-				3'b110: begin
-					out_r_int = OVERFLOW_MAIN_CEIL;
-					out_g_int = OVERFLOW_MAIN_CEIL;
-					out_b_int = spill_full;
-				end
-				3'b111: begin
-					out_r_int = 8'd255;
-					out_g_int = 8'd255;
-					out_b_int = 8'd255;
-				end
-				default: begin
-					out_r_int = 8'd0;
-					out_g_int = 8'd0;
-					out_b_int = 8'd0;
-				end
-			endcase
-		end
-	end
+	vfb_starwars_color color_converter (
+		.canonical_in(canonical_pixel),
+		.red(canonical_r),
+		.green(canonical_g),
+		.blue(canonical_b)
+	);
 
 	// Registered output stage.
 	always_ff @(posedge clk_sys) begin
@@ -642,6 +576,7 @@ module vfb_readout #(
 			VGA_R <= 8'd0;
 			VGA_G <= 8'd0;
 			VGA_B <= 8'd0;
+			CANONICAL_PIXEL <= 16'd0;
 			VGA_HS <= 1'b1;
 			VGA_VS <= 1'b1;
 			VGA_HBLANK <= 1'b1;
@@ -653,20 +588,15 @@ module vfb_readout #(
 			VGA_VBLANK <= vga_vblank_pre;
 
 			if (~vga_hblank_pre && ~vga_vblank_pre) begin
-				if (final_int == 9'd0 || pixel_rgb == 3'b000) begin
-					// Background flash effect for black pixels
-					VGA_R <= FLASH_PARAM[23:16];
-					VGA_G <= FLASH_PARAM[15:8];
-					VGA_B <= FLASH_PARAM[7:0];
-				end else begin
-					VGA_R <= out_r_int;
-					VGA_G <= out_g_int;
-					VGA_B <= out_b_int;
-				end
+				CANONICAL_PIXEL <= canonical_pixel;
+				VGA_R <= canonical_r;
+				VGA_G <= canonical_g;
+				VGA_B <= canonical_b;
 			end else begin
 				VGA_R <= 8'd0;
 				VGA_G <= 8'd0;
 				VGA_B <= 8'd0;
+				CANONICAL_PIXEL <= 16'd0;
 			end
 		end
 	end
